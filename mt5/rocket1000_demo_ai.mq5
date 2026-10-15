@@ -49,7 +49,7 @@ bool DemoGuards()
    if(AllowedDemoLogin <= 0 || AccountInfoInteger(ACCOUNT_LOGIN) != AllowedDemoLogin) return false;
    if(_Symbol != AllowedSymbol || SignalTimeframe != PERIOD_M15) return false;
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) return false;
-   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return false;
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) return false;
    if(PositionsTotal() != 0 || OrdersTotal() != 0) return false;
    if(AccountInfoDouble(ACCOUNT_EQUITY) <= 0.0) return false;
    if(!IsSecureURL() || StringLen(EAToken) < 24) return false;
@@ -128,12 +128,14 @@ string MakeSnapshot(MqlRates &rates[], int copied, double bid, double ask)
 
 string RequestSignal(const string payload)
 {
+   uchar utf8[], decoded[];
    char data[], response[];
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + EAToken + "\r\n";
    string responseHeaders;
-   int byteCount = StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
+   int byteCount = StringToCharArray(payload, utf8, 0, WHOLE_ARRAY, CP_UTF8);
    if(byteCount <= 1) return "";
    ArrayResize(data, byteCount - 1); // Remove UTF-8 null terminator
+   for(int i = 0; i < byteCount - 1; i++) data[i] = (char)utf8[i];
    ResetLastError();
    int status = WebRequest("POST", ServerURL + "/api/mt5/signal",
                            headers, 35000, data, response, responseHeaders);
@@ -143,7 +145,10 @@ string RequestSignal(const string payload)
             " terminal error ", GetLastError());
       return "";
    }
-   return CharArrayToString(response, 0, WHOLE_ARRAY, CP_UTF8);
+   int count = ArraySize(response);
+   ArrayResize(decoded, count);
+   for(int i = 0; i < count; i++) decoded[i] = (uchar)response[i];
+   return CharArrayToString(decoded, 0, WHOLE_ARRAY, CP_UTF8);
 }
 
 bool ExecuteRiskChecked(const ENUM_ORDER_TYPE side, MqlRates &rates[])
@@ -242,6 +247,11 @@ void OnTimer()
    GlobalVariableSet(dedupKey, (double)barTime); // Reserve BEFORE WebRequest to avoid replays.
 
    string result = RequestSignal(MakeSnapshot(bars, copied, tick.bid, tick.ask));
+   // Check the exact bar in the authenticated server response before execution.
+   int barField = StringFind(result, "\"barTime\":");
+   if(barField < 0) return;
+   long echoedBar = StringToInteger(StringSubstr(result, barField + StringLen("\"barTime\":")));
+   if(echoedBar != (long)barTime || iTime(_Symbol, SignalTimeframe, 1) != barTime) return;
    // The API returns compact JSON, action is the first property.
    if(StringFind(result, "{\"action\":\"BUY\"") == 0)
       ExecuteRiskChecked(ORDER_TYPE_BUY, bars);
