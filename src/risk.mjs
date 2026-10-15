@@ -35,7 +35,7 @@ export function validateSnapshot(s, allowedSymbol, now = Math.floor(Date.now() /
     if (c.low <= 0 || c.high < c.low || c.open < c.low || c.open > c.high || c.close < c.low || c.close > c.high) return "Malformed OHLC";
     previous = c.time;
   }
-  const age = now - previous; // last candle OPEN time, not close time
+  // MT5 broker timestamps may use a broker-specific UTC offset. Compare candles to\n  // the broker clock, while separately checking it is plausible relative to UTC.\n  if (!Number.isSafeInteger(s.marketServerTime) || Math.abs(now - s.marketServerTime) > 18 * 3600) return "Invalid broker clock";\n  const age = s.marketServerTime - previous; // last candle OPEN time, not close time
   if (age < POLICY.timeframeSeconds || age > POLICY.timeframeSeconds * 2 + 120) return "Stale or unclosed market data";
   return null;
 }
