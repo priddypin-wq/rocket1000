@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+.rocket1000-state.json*
+node_modules/
+*.log
