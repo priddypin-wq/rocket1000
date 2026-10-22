@@ -1,0 +1,11 @@
+FROM node:24-bookworm
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY server ./server
+COPY lib ./lib
+COPY ea ./ea
+COPY scripts/analysis-worker.mjs ./scripts/analysis-worker.mjs
+USER node
+CMD ["node", "scripts/analysis-worker.mjs"]
