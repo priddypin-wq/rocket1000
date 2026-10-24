@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import type { AutoState, TradeSettings } from "./automation-controls";
+import type { AutoState, TradeSettings } from "../../lib/trading-types";
 
 type Account = NonNullable<AutoState["account"]>;
 type Approval = {

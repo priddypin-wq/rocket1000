@@ -21,13 +21,19 @@ export default function AppShell({
           <Link href="/" className="robot-wordmark">
             ROCKET<span>1000</span>
           </Link>
-          <Link
-            href="/settings"
-            className="inner-avatar"
-            aria-label="Risk settings"
-          >
-            <DeadpoolAvatar />
-          </Link>
+          {active === "Settings" ? (
+            <span className="inner-avatar" aria-hidden="true">
+              <DeadpoolAvatar />
+            </span>
+          ) : (
+            <Link
+              href="/settings"
+              className="inner-avatar"
+              aria-label="Settings"
+            >
+              <DeadpoolAvatar />
+            </Link>
+          )}
         </header>
         <div className="inner-heading">
           <Link href="/" className="inner-back">

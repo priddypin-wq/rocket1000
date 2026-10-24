@@ -2,6 +2,13 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "npm run build:vercel",
+  "functions": {
+    "app/api/queues/analysis/route.ts": {
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "rocket1000-analysis" }
+      ]
+    }
+  },
   "git": {
     "deploymentEnabled": { "codex/professional-auto-trading-upgrade": false }
   }

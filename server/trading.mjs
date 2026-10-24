@@ -355,7 +355,8 @@ export async function tradeContext(tx, cid, now) {
     [cid],
   );
   const [scheduler] = await tx.query(
-    "SELECT last_seen FROM rocket_engine_scheduler ORDER BY last_seen DESC LIMIT 1",
+    "SELECT last_seen FROM rocket_engine_scheduler WHERE mode IN ('worker','cron') OR (mode='queue' AND id=?) ORDER BY last_seen DESC LIMIT 1",
+    [analysisEngine ? `queue:${cid}:${analysisEngine.run_id}` : ""],
   );
   const [credential] = await tx.query(
     "SELECT model FROM rocket_openai_credentials WHERE user_id=?",

@@ -51,7 +51,8 @@ try {
   assert.equal(page.status, 200, "MT5 page is unavailable");
   const html = await page.text();
   assert.ok(
-    html.includes("Generate Connection") && html.includes("Download EA"),
+    html.includes("Generate Connection") &&
+      html.includes("Download Rocket1000 EA (.ex5)"),
     "MT5 controls are missing",
   );
   assert.ok(

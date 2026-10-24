@@ -1,8 +1,17 @@
 # ROCKET1000 implementation verification
 
-Verified 23 October 2026. Existing application upgrade branch: `codex/professional-auto-trading-upgrade`. Engine `rocket-ai-5`; actual MQL5 EA `5.00`; existing connection protocol `4` retained.
+Verified 24 October 2026. Existing application upgrade branch: `codex/professional-auto-trading-upgrade`. Engine `rocket-ai-5`; actual MQL5 EA `5.00`; existing connection protocol `4` retained.
 
-**Unreleased. Production and active MT5 connection settings have not been changed. No real broker trades or Live activation occurred.** This report distinguishes actual local checks from fixtures and outstanding production acceptance.
+**Deployed with owner approval to https://rocket1000.vercel.app.** Deployment `dpl_3tcegNyyEJaRogZigBWsWRYkVYt1` passed its remote build, all four staged pages returned HTTP 200, and the staged build was promoted. Existing MT5 URL/configuration and active credentials were preserved. No real broker trades or Live activation occurred. This report distinguishes actual checks from fixtures and remaining broker acceptance.
+
+## Production release verification
+
+- 358 unit tests passed (356 full-suite cases plus 2 focused encrypted migration-backup cases); 56 HTTP integration checks passed; production Next.js build, TypeScript, ESLint and formatting passed.
+- Nine genuine live provisioning checks passed: HTTPS/database identity, MT5 controls, private session boundaries, secure cookie, generated URL, verified compiled EX5 and personalized source downloads, no simulated connection/trading, and test credential revocation. Only separate test workspaces were used; active EA credentials were not rotated.
+- Production Queue callback genuinely checked in. START rejected an unconnected terminal and STOP persisted to production storage. No analysis signal or order was invented to test scheduler availability.
+- The real configured OpenAI key was tested through the backend Responses path and returned `AI_BILLING_REQUIRED`. A successful paid inference is still blocked by that key's billing/credit limit.
+- Production Market shows real empty/disconnected states, Open Orders and Upcoming Orders without charts. Mobile width 393 has no horizontal overflow. Settings has one OpenAI form and one set of essential strategy/risk/authorization controls. Deadpool and existing branding remain.
+- Encrypted pre-migration logical snapshot of 24 existing tables was recorded before additive schema migration. Encryption secret is separately held in Vercel; database and existing URL/key variables were not replaced. This logical rollback snapshot is in the same database, not an off-site backup.
 
 ## Delivered changes
 
@@ -22,7 +31,7 @@ Verified 23 October 2026. Existing application upgrade branch: `codex/profession
 
 | Check                             | Result                                                     | Practical scope                                                                                                                                                    |
 | --------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Automated tests                   | **345 passed, 0 failed**                                   | Risk, encryption, model configuration, authorization, AI-only entry/exit, ownership, symbols, idempotency, partial execution, reconciliation and worker/cost tests |
+| Automated tests                   | **358 passed, 0 failed**                                   | Risk, encryption, model configuration, authorization, AI-only entry/exit, ownership, symbols, idempotency, partial execution, reconciliation and worker/cost tests |
 | HTTP integration after Next patch | **56 passed**                                              | Actual Next routes, cookie/EA credentials, HTTPS rejection, compiled package/config content, Start/Stop, costs and four-screen markup                              |
 | Next.js production build          | **Passed, Next 16.4.2**                                    | Optimized application and new engine/key/scheduler API routes                                                                                                      |
 | TypeScript                        | **Passed**                                                 | `npx tsc --noEmit` after production build                                                                                                                          |
@@ -30,10 +39,10 @@ Verified 23 October 2026. Existing application upgrade branch: `codex/profession
 | MQL5 compiler                     | **0 errors, 0 warnings; 13,748 ms**                        | Genuine fresh MetaEditor EX5, version 5.00; no terminal installation                                                                                               |
 | Browser review                    | **Passed at 393×852, 360×800 and 1280×900**                | Four screens, preserved visual identity, no chart surfaces/overflow, blank masked key and honest setup states                                                      |
 | Independent local worker process  | **Actual check-ins continued after review browser closed** | Isolated local database, zero analysis jobs and zero broker orders; this is startup/liveness verification, not a funded AI or broker test                          |
-| Runtime dependency audit          | **0 vulnerabilities**                                      | Current `npm audit --omit=dev`                                                                                                                                     |
-| Full dependency audit             | **5 high findings, development-only**                      | `braces` advisory propagated through the Next ESLint tooling chain; no compatible patched release available in the checked registry                                |
+| Runtime dependency audit          | **Previous check: 0; refresh unavailable**                 | The registry audit endpoint twice returned ECONNRESET during this release. A fresh clean audit is not claimed.                                                     |
+| Full dependency audit             | **Previously 5 high dev-only; install now reports 3 high** | Exact refreshed details were unavailable. No forced major-version tooling downgrade was applied.                                                                   |
 
-The 345 tests include 25 focused worker/cost cases: Start without a worker, analysis-only Demo/Live, deferred Start/Stop races, key-resolution cancellation, late result rejection, best-effort provider abort, stale terminal/session invalidation, restart/lease behavior, billing errors, concurrent reservations, usage uncertainty, unsupported prices, UTC/workspace isolation, key change/removal and stored-assessment reuse. Fixture transport exercises real production analysis/authorization code without invoking OpenAI or a broker. Both configured-model execution paths generate fixture commands only; they cannot qualify genuine Demo acceptance.
+The engine tests include focused worker/cost cases: Start without a worker, analysis-only Demo/Live, deferred Start/Stop races, key-resolution cancellation, late result rejection, best-effort provider abort, stale terminal/session invalidation, restart/lease behavior, billing errors, concurrent reservations, usage uncertainty, unsupported prices, UTC/workspace isolation, key change/removal and stored-assessment reuse. Fixture transport exercises real production analysis/authorization code without invoking OpenAI or a broker. Both configured-model execution paths generate fixture commands only; they cannot qualify genuine Demo acceptance.
 
 The HTTP HTTPS host, terminal payloads, keys and provider responses in tests are explicitly synthetic fixtures. There was **no genuine paid-key API success or real broker fill established by this upgrade**. No real-money development trades were placed.
 
@@ -45,13 +54,13 @@ The download gate verifies these against `ea/build-manifest.json`. LF source att
 
 ## Remaining setup and unverified operations
 
-1. **Vercel project access and release:** latest read of the owner-selected existing `rocket1000.vercel.app` project returned **403 for scope sniper-fx**. Authorize access to that existing team/project before a separately approved release. No duplicate project was created and the review branch disables Git deployment.
-2. **Separate encryption secret and durable scheduler:** configure the same private encryption secret and PostgreSQL database on web and supervised worker. No production worker or cron has been provisioned. START correctly refuses missing real check-ins. Docker is unavailable here: the allowlisted worker container definition is prepared but not built/tested.
-3. **Paid OpenAI acceptance:** save the actual paid key through the released HTTPS UI and complete a genuine Responses connection test. Funding, model/account access and current billing are unverified; a saved key alone cannot activate analysis. No key or payment detail should be sent in chat.
-4. **Genuine Demo MT5 pipeline:** a local MT5 process is running, but its account and broker connection are unverified for this engine. Read-only artifact inspection found one installed Rocket1000 binary; none matched this verified EA 5.00 build. No active EA/config was replaced. Keep the existing connection configuration, install the verified EA 5.00 after release approval, and test genuine automatic AI OPEN → protective MODIFY → full CLOSE with actual tickets/fills/history before any Live integration. Funded API access and the production worker also remain unverified. Existing external exposure or unverified safety information can legitimately block entry; limits were not bypassed.
+1. **Release complete:** owner-approved CLI deployment and production promotion succeeded on the existing project. Automatic Git deployment stays disabled and PR #4 remains unmerged.
+2. **Scheduler configured:** production encryption and genuine Vercel Queue callback check-ins are verified. Browser-independent funded market analysis still needs a connected current EA and usable OpenAI billing. The optional Docker worker image remains unbuilt because Docker is unavailable.
+3. **Paid OpenAI acceptance:** the real environment key returned AI_BILLING_REQUIRED through the backend Responses test. Resolve credits or billing limits for the organization owning that key, or save and verify a funded replacement in Settings. No key or payment details belong in chat.
+4. **Genuine Demo MT5 pipeline:** this engine has not completed a genuine broker OPEN → protective MODIFY → full CLOSE test. Earlier read-only inspection found no installed binary matching verified EA 5.00. No active EA/config was replaced. Keep the existing connection, install the verified EA 5.00 and verify broker/account data and current heartbeat. Existing external exposure, news/safety verification or stale data can legitimately block execution; limits were not bypassed.
 5. **Real broker edge cases:** partial fills/closes, rejection, slippage, broker-triggered stops and reconnection are covered by fixtures/native guards, but not observed on a broker in this upgrade.
 6. **Data/ownership limits:** one active EA chart instance/symbol per private connection. Off-chart owned positions remain visible; AI strategy proposals apply to current authenticated symbol data. No verified economic-news service is connected. Uncalibrated model scores are not trade probabilities. Broker safety/news checks required by existing execution policy remain blockers until genuinely verified.
-7. **Development audit:** runtime audit is clean; the remaining tooling advisory must still be rechecked upstream. The automatic suggestion downgrades Next ESLint across major versions and was not applied. A full clean dependency audit is not claimed.
+7. **Dependency audit:** previous runtime audit was clean, but the current registry refresh failed twice. Development tooling findings remain unresolved; a fresh clean audit is not claimed.
 
 Live remains OFF pending genuine Demo qualification and separate exact-account owner approval. Account switching does not transfer permission. Gaps, slippage and fees can exceed estimated stop risk; an already-sent order cannot be recalled. Production readiness is not claimed.
 
@@ -82,10 +91,10 @@ Paths below are relative to the existing local application baseline. Remote main
 - `app/api/mt5/orders/route.ts`
 - `app/api/mt5/revoke/route.ts`
 - `app/api/mt5/stop/route.ts`
-- `app/components/ai-connection-test.tsx`
+- Removed unused `app/components/ai-connection-test.tsx`
 - `app/components/analysis-panel.tsx`
 - `app/components/app-shell.tsx`
-- `app/components/automation-controls.tsx`
+- Removed unused `app/components/automation-controls.tsx`
 - `app/components/bottom-nav.tsx`
 - `app/components/live-activation.tsx`
 - `app/components/mt5-connection.tsx`
@@ -152,3 +161,5 @@ Paths below are relative to the existing local application baseline. Remote main
 - `tests/trading.test.mjs`
 - `tests/winning-additions.test.mjs`
 - `vercel.json`
+
+Release additions: `.vercelignore`, `app/api/queues/analysis/route.ts`, `lib/trading-types.ts`, `server/analysis-queue.mjs`, `server/migration-backup.mjs`, `tests/analysis-queue.test.mjs`, `tests/migration-backup.test.mjs`; corresponding engine, trading context, route, migration, model-display and deployment configuration changes.

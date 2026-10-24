@@ -1,6 +1,6 @@
 # ROCKET1000
 
-This upgrades the existing Next.js application and MQL5 Expert Advisor on `codex/professional-auto-trading-upgrade`. Original dark-purple/pink styling, Deadpool, account ownership and MT5 connection endpoints/configuration are preserved. This branch is unreleased. It has not deployed production, changed an active terminal's connection or activated Live trading.
+This upgrades the existing Next.js application and MQL5 Expert Advisor on `codex/professional-auto-trading-upgrade`. Original dark-purple/pink styling, Deadpool, account ownership and MT5 connection endpoints/configuration are preserved. The owner-approved release is deployed at https://rocket1000.vercel.app. Active terminal credentials were preserved and Live was not activated. The genuine OpenAI test currently reports AI_BILLING_REQUIRED; real broker acceptance remains outstanding.
 
 ## One-button workflow
 
@@ -25,7 +25,7 @@ Demo automatic execution requires a separate typed account confirmation. Live re
 
 ## Persistent execution and costs
 
-The worker is a **separate supervised Node process sharing PostgreSQL** with the web application. Browser polling is for display only. Database jobs, leases, account/session/key generations and assessment/action idempotency survive browser closure and process restart. Interrupted in-flight jobs fail closed rather than blindly retrying a paid request or broker order. Scheduler liveness is checked from actual worker check-ins; a missing worker cannot be reported as running. An optional authenticated bounded scheduler endpoint is also provided. See [operator setup](OPERATIONS.md).
+Production uses **Vercel Queue callbacks sharing PostgreSQL**, with a genuine private callback check-in verified after deployment. A recurring run-bound chain invokes bounded engine cycles independently of the browser. Frequency, budgets and per-bar reuse limit model requests. Cursor claims, job leases and account/session/key generations reject duplicate or superseded work. Interrupted jobs fail closed. The supervised Node worker and protected scheduler endpoint remain optional alternatives. See [operator setup](OPERATIONS.md).
 
 Default analysis frequency is five minutes, configurable from 60–3600 seconds. New closed-candle decisions are cached by run/bar; execution reuses the stored assessment rather than making a second paid request. Deterministic indicators are calculated locally. Text-only provider requests reserve conservative input/output cost before dispatch under a workspace lock. Verified token usage settles that reservation; missing usage or uncertain failures retain the full allowance. The default app budget is $2 per UTC day, configurable from $0.10–$10. Exhaustion, unknown prices and provider errors suspend new work.
 
@@ -45,4 +45,4 @@ Use Node 22.16+ (tested with Node 24), `npm ci`, private local environment setti
 
 Checks: `npm test`, `npm run test:http`, `npx tsc --noEmit`, `npm run lint`, `npm run build`, and Windows `npm run build:ea`. MetaEditor generates the real EX5 with zero errors/warnings; authenticated packages require source/binary hashes matching `ea/build-manifest.json`. The build never installs into an active terminal.
 
-Next.js is patched to 16.4.2 for the newly published [security advisory](https://github.com/advisories/GHSA-2464-fhr4-w9xw). See [verification, changed files and remaining acceptance requirements](UPGRADE-VERIFICATION.md). Git deployment is disabled for this review branch. Do not merge, deploy or activate Live as part of review.
+Next.js is patched to 16.4.2 for the newly published [security advisory](https://github.com/advisories/GHSA-2464-fhr4-w9xw). See [verification, changed files and remaining acceptance requirements](UPGRADE-VERIFICATION.md). Git deployment is disabled for this review branch. The draft PR remains unmerged. Further releases and Live activation require their own applicable authorization.

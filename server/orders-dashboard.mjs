@@ -11,7 +11,8 @@ import {
 } from "./trading.mjs";
 import { validateSnapshot, decisionBar, sanitizePositions } from "./market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
-import { MODEL, validateAssessment } from "./ai-analysis.mjs";
+import { validateAssessment } from "./ai-analysis.mjs";
+import { configuredModel, isConfiguredModel } from "./ai-provider.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
 
 // Called only after credential/account validation, inside the telemetry lock.
@@ -346,6 +347,11 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         "SELECT * FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' AND result IS NOT NULL ORDER BY created_at DESC LIMIT 1",
         [c.id, i?.id || ""],
       );
+      const [credential] = await tx.query(
+        "SELECT model FROM rocket_openai_credentials WHERE user_id=?",
+        [uid],
+      );
+      const activeModel = credential?.model || configuredModel();
       const opportunities = [];
       let latestSignal = null;
       if (symbolFresh && analysis) {
@@ -381,7 +387,7 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         if (
           valid &&
           a.engineVersion === ENGINE_VERSION &&
-          a.model === MODEL &&
+          isConfiguredModel(a.model, activeModel) &&
           a.settingsRevision === trading.settingsRevision &&
           a.symbol === market.symbol &&
           a.expiresAt > now() &&

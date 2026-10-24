@@ -2,19 +2,22 @@ import { dashboardRequest, jsonInput } from "../../../../server/http.mjs";
 import { getDatabase } from "../../../../server/database.mjs";
 import { engineService } from "../../../../server/engine-service.mjs";
 import { ApiError } from "../../../../server/errors.mjs";
+import { analysisQueue } from "../../../../server/analysis-queue.mjs";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 export const GET = (req: Request) =>
-  dashboardRequest(req, (_: unknown, uid: string) =>
-    engineService(getDatabase()).status(uid),
-  );
+  dashboardRequest(req, async (_: unknown, uid: string) => {
+    const db = getDatabase();
+    await analysisQueue(db).probe(uid);
+    return engineService(db).status(uid);
+  });
 export const POST = (req: Request) =>
   dashboardRequest(req, async (_: unknown, uid: string) => {
     const input = await jsonInput(req, 2048),
       engine = engineService(getDatabase());
     if (input?.action === "start" && Object.keys(input).length === 1)
-      return engine.start(uid);
+      return analysisQueue(getDatabase()).start(uid);
     if (input?.action === "stop" && Object.keys(input).length === 1)
       return engine.stop(uid);
     if (

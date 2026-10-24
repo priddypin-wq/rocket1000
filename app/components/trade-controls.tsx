@@ -9,7 +9,7 @@ import {
 import Link from "next/link";
 import { mt5Api } from "../../lib/mt5-client";
 import { useAnalysisEngine } from "../../lib/use-analysis-engine";
-import type { AutoState } from "./automation-controls";
+import type { AutoState } from "../../lib/trading-types";
 import LiveActivation from "./live-activation";
 
 type State = AutoState & {

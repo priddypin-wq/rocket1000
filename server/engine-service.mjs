@@ -70,9 +70,13 @@ export function engineService(
       onChange: credentialChanged,
       responder: usage.responder(uid, "connection-test"),
     });
-  async function scheduler() {
+  async function scheduler(connectionId = null, runId = null) {
     const [row] = await db.query(
-      "SELECT mode,last_seen FROM rocket_engine_scheduler ORDER BY last_seen DESC LIMIT 1",
+      "SELECT mode,last_seen FROM rocket_engine_scheduler WHERE mode IN ('worker','cron') OR (mode='queue' AND id IN (?,?)) ORDER BY last_seen DESC LIMIT 1",
+      [
+        connectionId ? `queue:${connectionId}:probe` : "",
+        connectionId && runId ? `queue:${connectionId}:${runId}` : "",
+      ],
     );
     return {
       configured: !!row && now() - Number(row.last_seen) < 150000,
@@ -81,7 +85,12 @@ export function engineService(
     };
   }
   async function heartbeat(mode = "worker", id = "primary") {
-    if (!["worker", "cron"].includes(mode))
+    const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+    if (
+      !["worker", "cron", "queue"].includes(mode) ||
+      (mode === "queue" &&
+        !new RegExp(`^queue:${uuid}:(?:probe|${uuid})$`, "i").test(id))
+    )
       throw new ApiError(400, "Invalid scheduler mode");
     await db.query(
       "INSERT INTO rocket_engine_scheduler(id,mode,last_seen) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,last_seen=excluded.last_seen",
@@ -99,7 +108,7 @@ export function engineService(
           [c.id],
         )
       : [];
-    const ready = await scheduler();
+    const ready = await scheduler(c?.id, row?.run_id);
     let state = row?.state || "stopped",
       reason = row?.reason || null;
     if (["scheduled", "running"].includes(state) && !ready.configured) {
@@ -130,7 +139,11 @@ export function engineService(
   async function start(uid) {
     const previous = await status(uid);
     if (["scheduled", "running"].includes(previous.state)) return previous;
-    if (!(await scheduler()).configured)
+    const [ownedConnection] = await db.query(
+      "SELECT id FROM rocket_direct_connections WHERE user_id=?",
+      [uid],
+    );
+    if (!(await scheduler(ownedConnection?.id)).configured)
       throw new ApiError(
         503,
         "The persistent analysis worker has not checked in. Start the server worker or configure the authenticated scheduler first.",
@@ -329,7 +342,7 @@ export function engineService(
     });
     return status(uid);
   }
-  async function cycle(cid) {
+  async function cycle(cid, expectedRun = null) {
     let job, observedRun;
     try {
       job = await db.transaction(async (tx) => {
@@ -341,7 +354,12 @@ export function engineService(
           "SELECT * FROM rocket_analysis_engine WHERE connection_id=?",
           [cid],
         );
-        if (!a || !["scheduled", "running"].includes(a.state)) return null;
+        if (
+          !a ||
+          (expectedRun !== null && a.run_id !== expectedRun) ||
+          !["scheduled", "running"].includes(a.state)
+        )
+          return null;
         observedRun = a.run_id;
         if (a.state === "running") {
           if (Number(a.lease_until) <= now())

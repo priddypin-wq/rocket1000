@@ -8,6 +8,7 @@ import { accountKey } from "../server/trade-settings.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { MODEL } from "../server/ai-analysis.mjs";
 import { adaptiveProfile } from "../server/market.mjs";
+import { openaiCredentialService } from "../server/openai-credentials.mjs";
 
 // All telemetry here is isolated fixture data, never a broker or AI acceptance test.
 async function setup() {
@@ -522,6 +523,81 @@ test("valid WAIT is informational only; stale, wrong-symbol and wrong-engine ana
     await f.db.close();
   }
 });
+test("saved alternative model proposals remain visible; other models cannot become opportunities", async () => {
+  const f = await setup();
+  try {
+    const model = "gpt-5-mini";
+    await openaiCredentialService(f.db, {
+      now: f.now,
+      env: {
+        ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+      },
+    }).save("alice", {
+      key: "sk-project-orders-fixture-not-a-real-key",
+      model,
+    });
+    const state = await tradingService(f.db, { now: f.now }).status("alice");
+    const m = { ...market(f.now()), symbol: f.symbol };
+    const value = {
+      decision: "BUY",
+      confidence: 0.95,
+      strategy: "trend",
+      timeframe: "M1",
+      entryPrice: m.ask,
+      stopLoss: 2095,
+      takeProfit: 2111,
+      reasoning: "Isolated alternative-model proposal fixture.",
+      entryAction: "OPEN",
+      proposedLots: 0.01,
+      positionActions: [],
+      risks: [],
+      engineVersion: ENGINE_VERSION,
+      model,
+      symbol: f.symbol,
+      settingsRevision: state.settingsRevision,
+      marketTimestamp: f.now(),
+      analyzedAt: f.now(),
+      expiresAt: f.now() + 60000,
+      profile: adaptiveProfile(m, state.settings),
+    };
+    const id = randomUUID();
+    await f.db.query(
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      [
+        id,
+        f.id,
+        f.token.split(".")[1],
+        "completed",
+        f.now(),
+        JSON.stringify(value),
+      ],
+    );
+    for (const returnedModel of [model, `${model}-2026-10-01`]) {
+      await f.db.query("UPDATE rocket_analyses SET result=? WHERE id=?", [
+        JSON.stringify({ ...value, model: returnedModel }),
+        id,
+      ]);
+      const s = await f.status();
+      assert.equal(s.latestSignal.id, id);
+      assert.equal(s.opportunities.length, 1);
+      assert.equal(s.opportunities[0].id, id);
+      assert.equal(s.opportunities[0].status, "Waiting for Confirmation");
+      assert.deepEqual(s.positions, []);
+    }
+    for (const returnedModel of [MODEL, "gpt-5-mini-other", "gpt-5.4"]) {
+      await f.db.query("UPDATE rocket_analyses SET result=? WHERE id=?", [
+        JSON.stringify({ ...value, model: returnedModel }),
+        id,
+      ]);
+      const s = await f.status();
+      assert.equal(s.latestSignal, null);
+      assert.deepEqual(s.opportunities, []);
+    }
+  } finally {
+    await f.db.close();
+  }
+});
+
 test("malformed broker history and account-trade-mode contradictions are rejected rather than displayed", async () => {
   const f = await setup();
   try {

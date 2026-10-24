@@ -4,7 +4,7 @@ import { engineService } from "../server/engine-service.mjs";
 import { ApiError } from "../server/errors.mjs";
 import { fixture, market, terminal } from "./helpers.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
-import { tradingService } from "../server/trading.mjs";
+import { tradeContext, tradingService } from "../server/trading.mjs";
 import { openaiCredentialService } from "../server/openai-credentials.mjs";
 import { credentialChanged } from "../server/engine-service.mjs";
 
@@ -122,6 +122,96 @@ test("START requires an actual scheduler check-in and never claims an unstarted 
     );
     assert.equal((await f.engine.status("alice")).state, "stopped");
     assert.equal(f.calls(), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+test("queue scheduler liveness is scoped to its connection and execution requires the exact active run", async () => {
+  const f = await setup();
+  const otherConnection = "01234567-89ab-cdef-0123-456789abcdef";
+  const oldRun = "abcdef01-2345-6789-abcd-ef0123456789";
+  const active = () =>
+    f.db.transaction(
+      async (tx) =>
+        (await tradeContext(tx, f.id, f.now())).analysisEngineActive,
+    );
+  try {
+    await f.engine.heartbeat("queue", `queue:${otherConnection}:probe`);
+    assert.equal((await f.engine.status("alice")).scheduler.configured, false);
+    await assert.rejects(
+      f.engine.start("alice"),
+      (e) => e.code === "AI_SCHEDULER_NOT_READY",
+    );
+    await f.engine.heartbeat("queue", `queue:${f.id}:probe`);
+    assert.equal((await f.engine.start("alice")).state, "scheduled");
+    assert.equal(
+      await active(),
+      false,
+      "an infrastructure probe cannot authorize orders",
+    );
+    const [row] = await f.db.query(
+      "SELECT run_id FROM rocket_analysis_engine WHERE connection_id=?",
+      [f.id],
+    );
+    await f.engine.heartbeat("queue", `queue:${otherConnection}:${row.run_id}`);
+    await f.engine.heartbeat("queue", `queue:${f.id}:${oldRun}`);
+    assert.equal(await active(), false);
+    await f.engine.heartbeat("queue", `queue:${f.id}:${row.run_id}`);
+    assert.equal(await active(), true);
+    f.advance(150001);
+    await f.engine.heartbeat("queue", `queue:${f.id}:probe`);
+    assert.equal((await f.engine.status("alice")).scheduler.configured, true);
+    assert.equal(
+      await active(),
+      false,
+      "a fresh probe cannot refresh a stalled run",
+    );
+    assert.equal(f.calls(), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+test("queue callbacks cannot claim a newer run after Stop and explicit restart", async () => {
+  const f = await setup();
+  try {
+    await f.engine.heartbeat("queue", `queue:${f.id}:probe`);
+    await f.engine.start("alice");
+    const [old] = await f.db.query(
+      "SELECT run_id FROM rocket_analysis_engine WHERE connection_id=?",
+      [f.id],
+    );
+    await f.engine.stop("alice");
+    await f.engine.start("alice");
+    const [current] = await f.db.query(
+      "SELECT run_id FROM rocket_analysis_engine WHERE connection_id=?",
+      [f.id],
+    );
+    assert.notEqual(current.run_id, old.run_id);
+    assert.equal((await f.engine.cycle(f.id, old.run_id)).state, "idle");
+    assert.equal(f.calls(), 0);
+    assert.equal((await f.engine.status("alice")).state, "scheduled");
+    await f.engine.heartbeat("queue", `queue:${f.id}:${current.run_id}`);
+    assert.equal(
+      (await f.engine.cycle(f.id, current.run_id)).state,
+      "scheduled",
+    );
+    assert.equal(f.calls(), 1);
+  } finally {
+    await f.db.close();
+  }
+});
+test("queue scheduler heartbeats reject unscoped identifiers", async () => {
+  const f = await setup();
+  try {
+    for (const id of ["primary", `queue:${f.id}`, `queue:${f.id}:anything`])
+      await assert.rejects(
+        f.engine.heartbeat("queue", id),
+        (e) => e.status === 400,
+      );
+    assert.equal(
+      (await f.db.query("SELECT * FROM rocket_engine_scheduler")).length,
+      0,
+    );
   } finally {
     await f.db.close();
   }
