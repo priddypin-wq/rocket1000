@@ -55,7 +55,12 @@ test("market telemetry sanitizes fields and computes actual candle indicators", 
   assert.equal(t.atr14, 2);
   assert.equal(t.priorHigh, 2099);
   assert.equal(t.bullishSweep, false);
-  assert.ok(t.windowVwap > 2040 && t.windowVwap < 2060);
+  const weighted = clean.bars.reduce(
+    (sum, b) => sum + ((b.high + b.low + b.close) / 3) * b.volume,
+    0,
+  );
+  const volume = clean.bars.reduce((sum, b) => sum + b.volume, 0);
+  assert.ok(Math.abs(t.windowVwap - weighted / volume) < 1e-8);
   const swept = structuredClone(clean);
   swept.bars.at(-1).low = 1900;
   assert.equal(technicals(swept).bullishSweep, true);
@@ -148,7 +153,9 @@ test("direct OpenAI SDK analysis takes priority and retains strict market assess
       assert.equal(body.store, false);
       assert.equal(body.text.format.strict, true);
       assert.equal(body.text.format.schema.additionalProperties, false);
-      assert.equal(body.text.format.schema.required.length, 12);
+      assert.equal(body.text.format.schema.required.length, 15);
+      for (const field of ["symbol", "timestamp", "entryConditions"])
+        assert.ok(body.text.format.schema.required.includes(field));
       const context = JSON.parse(body.input);
       assert.deepEqual(Object.keys(context.timeframes), [
         "M1",
@@ -412,7 +419,10 @@ for (const change of ["stop", "revoke", "rotate", "disconnect"])
       await entered;
       if (change === "stop") await f.service.stop("alice");
       if (change === "revoke") await f.service.revoke("alice", f.id);
-      if (change === "rotate") await f.download();
+      if (change === "rotate") {
+        await f.service.revoke("alice", f.id);
+        await f.download();
+      }
       if (change === "disconnect") f.advance(90001);
       release();
       await rejected;

@@ -13,7 +13,7 @@ import {
 const NOW = 1800000000000;
 function candles(
   seconds,
-  closes = Array.from({ length: 100 }, (_, i) => 100 + i),
+  closes = Array.from({ length: 220 }, (_, i) => 80 + i * (119 / 219)),
 ) {
   const boundary = Math.floor(NOW / (seconds * 1000)) * seconds;
   return closes.map((close, i) => ({
@@ -182,7 +182,14 @@ test("Wilder RSI matches the published 14-change numerical seed and remains unch
 });
 
 test("EMA and MACD match independent closed-form ramp values and EMA9 signal weighting", () => {
-  const t = technicals(snapshot());
+  const t = technicals({
+    bars: candles(
+      60,
+      Array.from({ length: 100 }, (_, i) => 100 + i),
+    ),
+    bid: 200,
+    ask: 200.1,
+  });
   const expectedEma = (period) =>
     199 - ((period - 1) / 2) * (1 - ((period - 1) / (period + 1)) ** 99);
   closeTo(t.ema9, expectedEma(9));
@@ -262,17 +269,17 @@ test("balanced and aggressive profiles cap configured risk and confidence while 
   });
   assert.equal(balanced.ready, true);
   assert.equal(balanced.regime, "trend");
-  assert.equal(balanced.effectiveRiskPct, 0.5);
+  assert.equal(balanced.effectiveRiskPct, 0.25);
   assert.equal(balanced.minConfidence, 0.8);
   assert.equal(balanced.minRewardRisk, 1.5);
-  assert.equal(aggressive.effectiveRiskPct, 0.5);
+  assert.equal(aggressive.effectiveRiskPct, 0.25);
   assert.equal(aggressive.minConfidence, 0.9);
-  assert.equal(aggressive.minRewardRisk, 1.2);
+  assert.equal(aggressive.minRewardRisk, 1.5);
   assert.equal(balanced.scalpingEligible, true);
   assert.deepEqual(balanced.allowedStrategies, ["trend", "scalping", "wait"]);
   assert.equal(balanced.decisionTimeframe, "M1");
   assert.equal(balanced.decisionBarTime, s.timeframes.M1.bars.at(-1).time);
-  assert.equal(balanced.frames.H1.barCount, 100);
+  assert.equal(balanced.frames.H1.barCount, 220);
   assert.equal(
     adaptiveProfile(s, { riskPerTradePct: 0.2 }).effectiveRiskPct,
     0.2,
@@ -290,7 +297,7 @@ test("scalp permission depends on mode spread cost plus M1/M5 direction and mome
   );
   s.timeframes.M1.bars = candles(
     60,
-    Array.from({ length: 100 }, (_, i) => 250 - i),
+    Array.from({ length: 220 }, (_, i) => 350 - i * 0.5),
   );
   const p = adaptiveProfile(s, { tradingMode: "aggressive" });
   assert.equal(p.scalpingEligible, false);
@@ -304,13 +311,13 @@ test("range and high volatility tighten risk while extreme volatility blocks eve
   range.bars = structuredClone(range.timeframes.M5.bars);
   const ranging = adaptiveProfile(range);
   assert.equal(ranging.regime, "range");
-  assert.equal(ranging.effectiveRiskPct, 0.25);
+  assert.equal(ranging.effectiveRiskPct, 0.125);
   assert.ok(!ranging.allowedStrategies.includes("trend"));
   assert.ok(ranging.allowedStrategies.includes("reversal"));
   const high = snapshot();
   high.timeframes.M1.bars.at(-1).high += 20;
   assert.equal(adaptiveProfile(high).regime, "high-volatility");
-  assert.equal(adaptiveProfile(high).effectiveRiskPct, 0.25);
+  assert.equal(adaptiveProfile(high).effectiveRiskPct, 0.125);
   const extreme = snapshot();
   extreme.timeframes.M1.bars.at(-1).high += 100;
   const stopped = adaptiveProfile(extreme, { tradingMode: "aggressive" });

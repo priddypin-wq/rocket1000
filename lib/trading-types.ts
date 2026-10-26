@@ -10,6 +10,7 @@ export type TradeSettings = {
   trailingStopPoints: number;
   breakEvenPoints: number;
   riskPerTradePct: number;
+  maxAggregateRiskPct: number;
   maxDailyLossPct: number;
   maxDrawdownPct: number;
   maxPositions: number;

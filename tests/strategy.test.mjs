@@ -154,11 +154,11 @@ test("liquidity sweep labels use prior levels and explicitly do not imply a cali
   );
 });
 
-test("old saved risk preferences are tightened to the new half-percent policy while lower limits survive", async () => {
+test("old saved risk preferences are tightened to the new quarter-percent policy while lower limits survive", async () => {
   const f = await fixture();
   try {
     for (const [saved, expected] of [
-      [1, 0.5],
+      [1, 0.25],
       [0.2, 0.2],
     ]) {
       await f.db.query(
@@ -211,7 +211,7 @@ test("selected strategy can only narrow market permissions and closed/unknown se
   assert.deepEqual(
     selectedStrategyProfile(s, { strategy: "price-action" }, profile, execution)
       .allowedStrategies,
-    ["trend", "reversal", "wait"],
+    ["trend", "wait"],
   );
   assert.deepEqual(
     selectedStrategyProfile(s, { strategy: "scalping" }, profile, execution)

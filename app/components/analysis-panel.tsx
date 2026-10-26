@@ -32,7 +32,9 @@ export default function AnalysisPanel() {
       {result ? (
         <>
           <div className={`decision decision-${result.decision.toLowerCase()}`}>
-            {result.symbol} · {result.decision}
+            {result.symbol} ·{" "}
+            {result.aiDecision ||
+              (result.decision === "WAIT" ? "HOLD" : result.decision)}
           </div>
           <p>{result.reasoning}</p>
           <div className="inner-kv">
@@ -43,10 +45,28 @@ export default function AnalysisPanel() {
             <span>Signal time</span>
             <b>{brokerTime(result.analyzedAt)}</b>
           </div>
+          <div className="inner-kv">
+            <span>Signal age</span>
+            <b>
+              {data?.serverTime
+                ? `${Math.max(0, Math.floor((data.serverTime - result.analyzedAt) / 1000))}s`
+                : "—"}
+            </b>
+          </div>
+          {result.entryConditions?.length ? (
+            <details className="settings-inline-details">
+              <summary>Entry conditions</summary>
+              {result.entryConditions.map((condition, index) => (
+                <p key={index}>{condition}</p>
+              ))}
+            </details>
+          ) : null}
           <p className="inner-caption">
-            {expired
-              ? "Expired · analysis history only."
-              : "An AI proposal is not a broker-confirmed execution."}
+            {!data?.market?.fresh
+              ? "Broker data stale · analysis history only."
+              : expired
+                ? "Expired · analysis history only."
+                : "An AI proposal is not a broker-confirmed execution."}
           </p>
           {result.risks?.length ? (
             <details className="settings-inline-details">
@@ -72,8 +92,8 @@ export default function AnalysisPanel() {
         </>
       ) : (
         <p>
-          No verified AI decision yet. START AI on Home after connecting OpenAI
-          and MT5.
+          No verified AI decision yet. Start Auto Trading on Home after
+          connecting OpenAI and MT5.
         </p>
       )}
       {profile ? (

@@ -16,7 +16,21 @@ export const POST = (req: Request) =>
       >,
       uid: string,
     ) => {
-      const { connectionId, format = "source" } = await jsonInput(req);
+      const input = await jsonInput(req);
+      if (
+        !input ||
+        typeof input !== "object" ||
+        Array.isArray(input) ||
+        Object.keys(input).some(
+          (k) => !["connectionId", "format", "replaceCredential"].includes(k),
+        )
+      )
+        throw new ApiError(400, "Invalid private EA download request.");
+      const {
+        connectionId,
+        format = "source",
+        replaceCredential = false,
+      } = input;
       await service.rateLimit(`download:${uid}`, 5);
       if (
         typeof connectionId !== "string" ||
@@ -41,7 +55,10 @@ export const POST = (req: Request) =>
           "The server address changed. Generate the connection again.",
           "CONNECTION_NOT_GENERATED",
         );
-      const bytes = await service.download(uid, connectionId, { format });
+      const bytes = await service.download(uid, connectionId, {
+        format,
+        replaceCredential,
+      });
       return new Response(new Uint8Array(bytes), {
         headers: {
           ...responseHeaders,

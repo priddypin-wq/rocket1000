@@ -20,14 +20,14 @@ export function market(timestamp = NOW) {
     Object.entries(TIMEFRAMES).map(([name, seconds]) => [
       name,
       {
-        bars: Array.from({ length: 100 }, (_, i) => ({
+        bars: Array.from({ length: 220 }, (_, i) => ({
           time:
             Math.floor(timestamp / (seconds * 1000)) * seconds -
-            (100 - i) * seconds,
-          open: 2000 + i,
-          close: 2000.5 + i,
-          high: 2001 + i,
-          low: 1999 + i,
+            (220 - i) * seconds,
+          open: 1880 + i,
+          close: 1880.5 + i,
+          high: 1881 + i,
+          low: 1879 + i,
           volume: 100 + i,
         })),
       },
@@ -60,6 +60,9 @@ export async function fixture() {
   let clock = NOW;
   const now = () => clock;
   const service = provisioningService(db, {
+    env: {
+      ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    },
     now,
     origin: () => "https://integration.example.test",
   });
@@ -95,22 +98,10 @@ export const decision = {
   risks: ["Economic news is unknown."],
 };
 
-// Exercises the actual server confirmation protocol in isolated test databases.
-// This helper neither grants Demo qualification nor contacts a broker.
+// Compatibility for execution regression fixtures: account-specific approval
+// dialogs no longer grant authority. Only a seeded test engine plus START can.
 export async function approveFixtureLive(trade, uid = "alice") {
-  const state = await trade.status(uid);
-  const approval = await trade.act(uid, {
-    action: "prepare-live",
-    accountKey: state.accountKey,
-  });
-  await trade.act(uid, {
-    action: "confirm-live",
-    approvalId: approval.approvalId,
-    accountKey: approval.accountKey,
-    confirmation: `ENABLE LIVE ${approval.account.login}`,
-    acknowledgedRisk: true,
-  });
-  return approval;
+  return trade.status(uid);
 }
 
 // Explicit stored model fixture for reviewed-entry protocol tests only. This

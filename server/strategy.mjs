@@ -1,4 +1,4 @@
-import { adaptiveProfile } from "./market.mjs";
+import { adaptiveProfile, technicals } from "./market.mjs";
 
 function validClosedCandles(bars) {
   return (
@@ -229,17 +229,126 @@ export function selectedStrategyProfile(
       Number.isInteger(execution.orderMode) &&
       (execution.orderMode & 1) === 1);
   const scalpingEligible = profile.scalpingEligible && scalpSession;
+  const breakoutFrame = snapshot.timeframes?.M1?.bars;
+  const breakoutAction = priceActionFeatures(breakoutFrame);
+  const breakoutSide =
+    breakoutAction?.retest === "resistance-held-as-support"
+      ? "BUY"
+      : breakoutAction?.retest === "support-held-as-resistance"
+        ? "SELL"
+        : null;
+  const breakoutEligible =
+    scalpSession &&
+    profile.ready &&
+    profile.effectiveRiskPct > 0 &&
+    profile.regime !== "extreme-volatility" &&
+    breakoutSide !== null &&
+    [profile.frames?.M5, profile.frames?.M15].every(
+      (f) => f?.trend?.direction === (breakoutSide === "BUY" ? "up" : "down"),
+    );
+  const last = breakoutFrame?.at(-1),
+    prior = breakoutFrame?.at(-2);
+  const previousAction = Array.isArray(breakoutFrame)
+    ? priceActionFeatures(breakoutFrame.slice(0, -1))
+    : null;
+  const precedingTrend =
+    breakoutFrame?.length >= 27
+      ? technicals({
+          bars: breakoutFrame.slice(0, -2),
+          bid: snapshot.bid,
+          ask: snapshot.ask,
+        }).trend.direction
+      : null;
+  // A completed rejection/sweep needs a later completed directional candle.
+  // Temporary floating loss and a model's opinion cannot manufacture this gate.
+  const previousRange = Array.isArray(breakoutFrame)
+    ? breakoutFrame.slice(-22, -2)
+    : [];
+  const sweptLow =
+    previousRange.length >= 20 &&
+    prior.low < Math.min(...previousRange.map((b) => b.low)) &&
+    prior.close > Math.min(...previousRange.map((b) => b.low));
+  const sweptHigh =
+    previousRange.length >= 20 &&
+    prior.high > Math.max(...previousRange.map((b) => b.high)) &&
+    prior.close < Math.max(...previousRange.map((b) => b.high));
+  const reversalSide =
+    last &&
+    prior &&
+    last.close > last.open &&
+    last.close > prior.high &&
+    (sweptLow ||
+      (precedingTrend === "down" && previousAction?.candle.bullishRejection))
+      ? "BUY"
+      : last &&
+          prior &&
+          last.close < last.open &&
+          last.close < prior.low &&
+          (sweptHigh ||
+            (precedingTrend === "up" &&
+              previousAction?.candle.bearishRejection))
+        ? "SELL"
+        : null;
+  const reversalEligible =
+    scalpSession &&
+    profile.ready &&
+    profile.effectiveRiskPct > 0 &&
+    profile.regime !== "extreme-volatility" &&
+    reversalSide !== null;
   const allowedStrategies = profile.allowedStrategies.filter(
     (name) =>
       name === "wait" ||
       (name === "scalping"
         ? strategy !== "price-action" && scalpingEligible
-        : strategy !== "scalping"),
+        : name === "reversal"
+          ? strategy !== "scalping" && reversalEligible
+          : strategy !== "scalping"),
   );
+  if (strategy !== "scalping" && breakoutEligible)
+    allowedStrategies.splice(allowedStrategies.indexOf("wait"), 0, "breakout");
+  if (
+    strategy !== "scalping" &&
+    reversalEligible &&
+    !allowedStrategies.includes("reversal")
+  )
+    allowedStrategies.splice(allowedStrategies.indexOf("wait"), 0, "reversal");
+  const slippagePoints = Number.isFinite(settings.maxSlippagePoints)
+    ? Math.max(0, Math.min(10, settings.maxSlippagePoints))
+    : 10;
+  const costDataReady =
+    execution?.costsVerified === true &&
+    Number.isFinite(execution.commissionPerLot) &&
+    execution.commissionPerLot >= 0 &&
+    [execution.tickSize, execution.tickValue, execution.point].every(
+      (n) => Number.isFinite(n) && n > 0,
+    );
+  const totalCostDistance = costDataReady
+    ? snapshot.ask -
+      snapshot.bid +
+      (execution.commissionPerLot * execution.tickSize) / execution.tickValue +
+      2 * slippagePoints * execution.point
+    : null;
   return {
     ...profile,
     selectedStrategy: strategy,
     scalpingEligible,
+    breakoutEligible,
+    breakoutSide: breakoutEligible ? breakoutSide : null,
+    trendSide:
+      profile.frames?.M5?.trend?.direction === "up"
+        ? "BUY"
+        : profile.frames?.M5?.trend?.direction === "down"
+          ? "SELL"
+          : null,
+    reversalEligible,
+    reversalSide: reversalEligible ? reversalSide : null,
+    reversalReason: reversalEligible
+      ? "A completed rejection or liquidity sweep is followed by a completed directional confirmation."
+      : "A completed sweep/rejection and subsequent confirmation are required.",
+    breakoutReason: breakoutEligible
+      ? "A completed M1 breakout/retest agrees with verified M5 and M15 trend direction."
+      : "A completed breakout/retest with higher-timeframe confirmation is required.",
+    totalCostDistance,
     scalpingReason: !scalpSession
       ? "Verified broker session and execution permissions are required for scalping."
       : profile.scalpingReason,
@@ -281,6 +390,16 @@ export function strategyContext(snapshot, execution = {}) {
         "No out-of-sample calibrated trade-probability model is connected.",
     },
     brokerConditions: {
+      costsVerified: execution.costsVerified === true,
+      roundtripCommissionPerLot: Number.isFinite(execution.commissionPerLot)
+        ? execution.commissionPerLot
+        : null,
+      stopLevel: Number.isFinite(execution.stopLevel)
+        ? execution.stopLevel
+        : null,
+      freezeLevel: Number.isFinite(execution.freezeLevel)
+        ? execution.freezeLevel
+        : null,
       sessionOpen:
         typeof execution.sessionOpen === "boolean"
           ? execution.sessionOpen

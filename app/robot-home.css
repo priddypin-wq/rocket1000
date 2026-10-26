@@ -1389,4 +1389,38 @@
 }
 .robot-controls {
   justify-content: space-evenly;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.scalp-capitalize {
+  text-transform: capitalize;
+}
+.scalp-summary h2 {
+  margin: 12px 0;
+  font-size: 19px;
+}
+.scalp-summary .order-values {
+  margin: 16px 0;
+}
+.scalp-summary .order-ticket {
+  color: #bea2b3;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.scalp-summary .order-attention {
+  padding: 10px;
+  border: 1px solid #7b4055;
+  border-radius: 10px;
+  color: #efb6c7;
+  font-size: 11px;
+}
+.scalp-summary .inner-kv b {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 390px) {
+  .engine-start {
+    font-size: 13px;
+    letter-spacing: 0.6px;
+    padding-inline: 10px;
+  }
 }

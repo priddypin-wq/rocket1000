@@ -5,10 +5,35 @@ import { analysisService } from "./analysis-service.mjs";
 import { analyzeMarket } from "./ai-analysis.mjs";
 import { openaiCredentialService as credentialService } from "./openai-credentials.mjs";
 import { usageService, defaultDailyBudget } from "./ai-usage.mjs";
-import { tradeContext, disableTrading } from "./trading.mjs";
+import {
+  tradeContext,
+  disableTrading,
+  authorizeUnifiedAutomation,
+} from "./trading.mjs";
 import { automationService } from "./automation.mjs";
 import { decisionBar, requireMultiTimeframe } from "./market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import {
+  activationState,
+  pauseActivation,
+  environmentCredentialRevision,
+} from "./engine-activation.mjs";
+
+function startupBlockers(ctx) {
+  const ownedProtected =
+    ctx.market?.positions.length > 0 &&
+    ctx.market.positions.every((p) => p.managed === true && p.stop > 0) &&
+    ctx.execution?.stopsVerified === true &&
+    ctx.execution?.costsVerified === true &&
+    ctx.execution?.consecutiveLossesVerified === true;
+  // Existing verified owned positions need AI monitoring after a restart. This
+  // removes only the entry-count gate from startup; OPEN still checks every
+  // position/risk limit independently and no external position is managed.
+  return ctx.blockers.filter(
+    (reason) =>
+      !(ownedProtected && /^Maximum \d+ open positions;/.test(reason)),
+  );
+}
 
 export const analysisEngineSchema = [
   `CREATE TABLE IF NOT EXISTS rocket_analysis_engine (connection_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,state TEXT NOT NULL,installation_id TEXT NOT NULL,session_id TEXT NOT NULL,account_key TEXT NOT NULL,key_revision TEXT NOT NULL,frequency_seconds INTEGER NOT NULL DEFAULT 300,daily_budget_microusd BIGINT NOT NULL DEFAULT 2000000,last_cycle BIGINT NOT NULL DEFAULT 0,next_cycle BIGINT NOT NULL DEFAULT 0,last_bar BIGINT NOT NULL DEFAULT 0,lease_until BIGINT NOT NULL DEFAULT 0,reason TEXT,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
@@ -40,7 +65,7 @@ export async function credentialChanged(uid, tx) {
       tx,
       c.id,
       Date.now(),
-      "OpenAI credential changed. Verify and restart explicitly.",
+      "OpenAI credential changed. Waiting for automatic verification.",
     );
   if (c)
     await tx.query("DELETE FROM rocket_ai_health WHERE connection_id=?", [
@@ -70,6 +95,13 @@ export function engineService(
       onChange: credentialChanged,
       responder: usage.responder(uid, "connection-test"),
     });
+  // Internal only: never return an API-key fingerprint to the browser. Unlike
+  // a constant "environment" revision, this invalidates jobs after rotation,
+  // including a response already in flight when the server secret changes.
+  const credentialRevision = (metadata) =>
+    !credentials && env.ROCKET_OPENAI_SERVER_MANAGED !== "0"
+      ? environmentCredentialRevision(env)
+      : String(metadata?.revision || "environment");
   async function scheduler(connectionId = null, runId = null) {
     const [row] = await db.query(
       "SELECT mode,last_seen FROM rocket_engine_scheduler WHERE mode IN ('worker','cron') OR (mode='queue' AND id IN (?,?)) ORDER BY last_seen DESC LIMIT 1",
@@ -109,8 +141,19 @@ export function engineService(
         )
       : [];
     const ready = await scheduler(c?.id, row?.run_id);
+    const [activation] = c
+      ? await db.query(
+          "SELECT * FROM rocket_engine_activation WHERE connection_id=?",
+          [c.id],
+        )
+      : [];
+    // Infrastructure probes establish scheduler availability, not execution
+    // authority. Account/session freshness and active-run liveness are separate.
+    const executionContext = c
+      ? await db.transaction((tx) => tradeContext(tx, c.id, now()))
+      : null;
     let state = row?.state || "stopped",
-      reason = row?.reason || null;
+      reason = row?.reason || activation?.reason || null;
     if (["scheduled", "running"].includes(state) && !ready.configured) {
       state = "suspended";
       reason =
@@ -122,7 +165,7 @@ export function engineService(
     ) {
       state = "suspended";
       reason =
-        "Previous analysis was interrupted. Restart explicitly; its outcome is not retried.";
+        "Previous analysis was interrupted. No order is retried; automatic readiness will be checked again.";
     }
     return {
       state,
@@ -133,12 +176,27 @@ export function engineService(
       scheduler: ready,
       usage: await usage.totals(uid),
       engineVersion: ENGINE_VERSION,
-      executionAuthorized: false,
+      automaticActivation: {
+        paused: activation ? !!activation.paused : true,
+        nextAttempt: activation?.next_attempt
+          ? Number(activation.next_attempt)
+          : null,
+        reason: activation?.reason || null,
+      },
+      executionAuthorized: !!(
+        executionContext?.permissionActive &&
+        executionContext.automation?.state === "running" &&
+        ["scheduled", "running"].includes(state)
+      ),
     };
   }
-  async function start(uid) {
+  async function start(uid, { automatic = false, generation = null } = {}) {
     const previous = await status(uid);
-    if (["scheduled", "running"].includes(previous.state)) return previous;
+    if (
+      ["scheduled", "running"].includes(previous.state) &&
+      previous.executionAuthorized
+    )
+      return previous;
     const [ownedConnection] = await db.query(
       "SELECT id FROM rocket_direct_connections WHERE user_id=?",
       [uid],
@@ -149,8 +207,24 @@ export function engineService(
         "The persistent analysis worker has not checked in. Start the server worker or configure the authenticated scheduler first.",
         "AI_SCHEDULER_NOT_READY",
       );
+    let expectedActivation = generation;
+    if (!automatic && ownedConnection) {
+      expectedActivation = randomUUID();
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+          [ownedConnection.id],
+        );
+        await activationState(tx, ownedConnection.id);
+        await tx.query(
+          "UPDATE rocket_engine_activation SET paused=0,generation=?,next_attempt=0,lease_until=?,reason=NULL WHERE connection_id=?",
+          [expectedActivation, now() + 90000, ownedConnection.id],
+        );
+      });
+    }
     const credential = keys(uid),
       keyBefore = await credential.status(uid);
+    const revisionBefore = credentialRevision(keyBefore);
     if (!keyBefore.configured)
       throw new ApiError(
         409,
@@ -170,7 +244,18 @@ export function engineService(
         `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
         [connection.id],
       );
-      const ctx = await tradeContext(tx, connection.id, now());
+      let ctx = await tradeContext(tx, connection.id, now());
+      const activation = await activationState(tx, connection.id);
+      if (
+        activation.paused ||
+        activation.generation !== expectedActivation ||
+        Number(activation.lease_until) <= now()
+      )
+        throw new ApiError(
+          409,
+          "Automatic activation was paused or superseded.",
+          "AI_START_CANCELLED",
+        );
       if (
         !ctx.market ||
         !ctx.i?.registered_at ||
@@ -184,12 +269,52 @@ export function engineService(
           "Fresh verified account, broker data and current EA engine are required.",
           "MT5_DATA_NOT_VERIFIED",
         );
+      if (ctx.connectionBlockers.length)
+        throw new ApiError(
+          409,
+          ctx.connectionBlockers.join(" "),
+          "MT5_PERMISSIONS_REQUIRED",
+        );
+      // One adaptive workflow chooses the strategy and safe size. Legacy
+      // manual selectors cannot silently pin a newly started unified engine.
+      if (
+        ctx.settings.strategy !== "adaptive" ||
+        ctx.settings.sizingMode !== "adaptive"
+      ) {
+        await tx.query(
+          "UPDATE rocket_trade_preferences SET revision=?,payload=? WHERE connection_id=?",
+          [
+            randomUUID(),
+            JSON.stringify({
+              ...ctx.settings,
+              strategy: "adaptive",
+              sizingMode: "adaptive",
+            }),
+            ctx.c.id,
+          ],
+        );
+        await tx.query(
+          "DELETE FROM rocket_order_previews WHERE connection_id=?",
+          [ctx.c.id],
+        );
+        ctx = await tradeContext(tx, connection.id, now());
+      }
       requireMultiTimeframe(ctx.market);
       const [active] = await tx.query(
         "SELECT state,lease_until FROM rocket_analysis_engine WHERE connection_id=?",
         [ctx.c.id],
       );
       if (
+        ["scheduled", "running"].includes(active?.state) &&
+        !ctx.permissionActive
+      )
+        await stopAnalysis(
+          tx,
+          ctx.c.id,
+          now(),
+          "Revalidating the explicitly enabled execution session.",
+        );
+      else if (
         ["scheduled", "running"].includes(active?.state) ||
         (active?.state === "verifying" && Number(active.lease_until) > now())
       )
@@ -207,7 +332,7 @@ export function engineService(
           ctx.i.id,
           ctx.x.session_id,
           ctx.consent.key,
-          String(keyBefore.revision || "environment"),
+          revisionBefore,
           Math.round(defaultDailyBudget(env) * 1e6),
           now(),
           now() + 90000,
@@ -230,7 +355,7 @@ export function engineService(
             "AI_CONNECTION_REQUIRED",
         );
       const keyAfter = await credential.status(uid);
-      if (keyAfter.revision !== keyBefore.revision)
+      if (credentialRevision(keyAfter) !== revisionBefore)
         throw new ApiError(
           409,
           "The key changed during verification. Retry Start.",
@@ -246,7 +371,11 @@ export function engineService(
           [connection.id],
         );
         const ctx = await tradeContext(tx, connection.id, now());
+        const activation = await activationState(tx, connection.id);
         if (
+          (automatic && startupBlockers(ctx).length > 0) ||
+          activation.paused ||
+          activation.generation !== expectedActivation ||
           !a ||
           a.run_id !== operationId ||
           a.state !== "verifying" ||
@@ -266,6 +395,15 @@ export function engineService(
         await tx.query(
           "UPDATE rocket_analysis_engine SET state='scheduled',lease_until=0,next_cycle=? WHERE connection_id=? AND run_id=?",
           [now(), connection.id, operationId],
+        );
+        await authorizeUnifiedAutomation(
+          tx,
+          await tradeContext(tx, connection.id, now()),
+          now(),
+        );
+        await tx.query(
+          "UPDATE rocket_engine_activation SET lease_until=0,next_attempt=0,reason=NULL WHERE connection_id=? AND generation=?",
+          [connection.id, expectedActivation],
         );
       });
     } catch (error) {
@@ -289,9 +427,112 @@ export function engineService(
         `SELECT id FROM rocket_direct_connections WHERE user_id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
         [uid],
       );
-      if (c) await stopAnalysis(tx, c.id, now());
+      if (c) {
+        await pauseActivation(tx, c.id);
+        await stopAnalysis(tx, c.id, now());
+      }
     });
     return status(uid);
+  }
+  async function autoStart(uid) {
+    const [c] = await db.query(
+      "SELECT id FROM rocket_direct_connections WHERE user_id=?",
+      [uid],
+    );
+    if (!c || !(await scheduler(c.id)).configured) return status(uid);
+    let generation;
+    try {
+      generation = await db.transaction(async (tx) => {
+        await tx.query(
+          `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+          [c.id],
+        );
+        const activation = await activationState(tx, c.id);
+        if (
+          activation.paused ||
+          Number(activation.next_attempt) > now() ||
+          Number(activation.lease_until) > now()
+        )
+          return null;
+        const ctx = await tradeContext(tx, c.id, now());
+        if (ctx.analysisEngineActive && ctx.permissionActive) return null;
+        if (
+          !ctx.market ||
+          ctx.execution?.engineVersion !== ENGINE_VERSION ||
+          ctx.execution?.protocol !== 4 ||
+          !ctx.execution?.terminalId ||
+          !ctx.i?.registered_at ||
+          startupBlockers(ctx).length ||
+          (ctx.i.account_type === "live" &&
+            env.ROCKET_DISABLE_LIVE_ORDERS === "1")
+        ) {
+          await tx.query(
+            "UPDATE rocket_engine_activation SET reason=? WHERE connection_id=?",
+            [
+              startupBlockers(ctx).join(" ") ||
+                "Waiting for the authenticated current EA and broker permissions.",
+              c.id,
+            ],
+          );
+          return null;
+        }
+        requireMultiTimeframe(ctx.market);
+        if (
+          ["scheduled", "running", "verifying"].includes(
+            ctx.analysisEngine?.state,
+          )
+        ) {
+          // A new verified account/session receives a new run; an old account's
+          // policy, pending result or verification is never inherited.
+          if (
+            ctx.analysisEngine.installation_id === ctx.i.id &&
+            ctx.analysisEngine.session_id === ctx.x.session_id &&
+            ctx.analysisEngine.account_key === ctx.consent.key &&
+            ctx.analysisEngine.state === "verifying" &&
+            Number(ctx.analysisEngine.lease_until) > now()
+          )
+            return null;
+          await stopAnalysis(
+            tx,
+            c.id,
+            now(),
+            "Revalidating the authenticated EA account and engine session.",
+          );
+        }
+        const nextGeneration = randomUUID();
+        await tx.query(
+          "UPDATE rocket_engine_activation SET generation=?,lease_until=?,next_attempt=? WHERE connection_id=? AND paused=0",
+          [nextGeneration, now() + 90000, now() + 300000, c.id],
+        );
+        return nextGeneration;
+      });
+      if (!generation) return status(uid);
+      await start(uid, { automatic: true, generation });
+    } catch (error) {
+      if (generation)
+        await db.query(
+          "UPDATE rocket_engine_activation SET lease_until=0,next_attempt=?,reason=? WHERE connection_id=? AND generation=? AND paused=0",
+          [
+            now() + 300000,
+            error instanceof ApiError
+              ? error.message
+              : "Automatic startup is unavailable. No orders are authorized.",
+            c.id,
+            generation,
+          ],
+        );
+      // Heartbeats and durable discovery remain healthy when prerequisites or
+      // provider billing fail. The persisted five-minute backoff bounds retries.
+    }
+    return status(uid);
+  }
+  async function discoverStarts({ limit = 2 } = {}) {
+    const rows = await db.query(
+      "SELECT c.user_id FROM rocket_direct_connections c JOIN rocket_direct_installations i ON i.connection_id=c.id LEFT JOIN rocket_engine_activation a ON a.connection_id=c.id WHERE i.revoked_at IS NULL AND i.expires_at>? AND i.registered_at IS NOT NULL AND i.last_heartbeat>? AND (a.paused IS NULL OR a.paused=0) AND (a.next_attempt IS NULL OR a.next_attempt<=?) AND (a.lease_until IS NULL OR a.lease_until<=?) ORDER BY i.last_heartbeat DESC LIMIT ?",
+      [now(), now() - 30000, now(), now(), Math.max(1, Math.min(10, limit))],
+    );
+    for (const row of rows) await autoStart(row.user_id);
+    return { discovered: rows.length };
   }
   async function configure(uid, input) {
     const frequency = input.frequencySeconds,
@@ -374,6 +615,27 @@ export function engineService(
         if (Number(a.next_cycle) > now()) return null;
         const ctx = await tradeContext(tx, cid, now());
         if (
+          ctx.i &&
+          ctx.x &&
+          a.installation_id === ctx.i.id &&
+          a.session_id === ctx.x.session_id &&
+          a.account_key === ctx.consent.key &&
+          ctx.execution?.engineVersion === ENGINE_VERSION &&
+          (!ctx.market ||
+            now() - Number(ctx.i.last_heartbeat) > 30000 ||
+            now() - Number(ctx.x.received_at) > 30000)
+        ) {
+          await tx.query(
+            "UPDATE rocket_analysis_engine SET next_cycle=?,reason=? WHERE connection_id=?",
+            [
+              now() + 15000,
+              "Waiting for fresh authenticated broker data; new orders blocked.",
+              cid,
+            ],
+          );
+          return null;
+        }
+        if (
           !ctx.market ||
           !ctx.i ||
           !ctx.x ||
@@ -407,7 +669,7 @@ export function engineService(
       if (!job) return { state: "idle" };
       const key = keys(job.uid),
         metadata = await key.status(job.uid);
-      if (String(metadata.revision || "environment") !== job.key_revision)
+      if (credentialRevision(metadata) !== job.key_revision)
         throw new ApiError(
           409,
           "OpenAI credential changed. Restart explicitly.",
@@ -415,6 +677,16 @@ export function engineService(
         );
       const requestEnv = await key.environment(job.uid);
       const guard = async (tx) => {
+        if (
+          !credentials &&
+          env.ROCKET_OPENAI_SERVER_MANAGED !== "0" &&
+          credentialRevision(metadata) !== job.key_revision
+        )
+          throw new ApiError(
+            409,
+            "Server AI configuration changed; in-flight result discarded.",
+            "AI_CONFIGURATION_CHANGED",
+          );
         const [row] = await tx.query(
           "SELECT * FROM rocket_analysis_engine WHERE connection_id=?",
           [cid],
@@ -422,6 +694,7 @@ export function engineService(
         if (
           !row ||
           row.run_id !== job.run_id ||
+          row.session_id !== job.session_id ||
           row.state !== "running" ||
           Number(row.lease_until) <= now()
         )
@@ -486,13 +759,15 @@ export function engineService(
           [cid],
         );
         const [row] = await tx.query(
-          "SELECT run_id,state FROM rocket_analysis_engine WHERE connection_id=?",
+          "SELECT run_id,state,session_id FROM rocket_analysis_engine WHERE connection_id=?",
           [cid],
         );
         if (
           !row ||
           row.run_id !== (job?.run_id || observedRun) ||
-          row.state === "stopped"
+          (job && row.session_id !== job.session_id) ||
+          row.state === "stopped" ||
+          (job && row.state !== "running")
         )
           return;
         const reason =
@@ -504,11 +779,16 @@ export function engineService(
           "UPDATE rocket_analysis_engine SET state='suspended' WHERE connection_id=?",
           [cid],
         );
+        await tx.query(
+          "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason=? WHERE connection_id=? AND paused=0",
+          [now() + 300000, reason, cid],
+        );
       });
       return { state: "suspended" };
     }
   }
   async function drain({ limit = 2 } = {}) {
+    await discoverStarts({ limit });
     const rows = await db.query(
       "SELECT connection_id FROM rocket_analysis_engine WHERE state IN ('scheduled','running') AND next_cycle<=? ORDER BY next_cycle LIMIT ?",
       [now(), Math.min(10, Math.max(1, limit))],
@@ -517,5 +797,16 @@ export function engineService(
     for (const row of rows) results.push(await cycle(row.connection_id));
     return { processed: results.length };
   }
-  return { start, stop, configure, status, scheduler, heartbeat, cycle, drain };
+  return {
+    start,
+    autoStart,
+    discoverStarts,
+    stop,
+    configure,
+    status,
+    scheduler,
+    heartbeat,
+    cycle,
+    drain,
+  };
 }

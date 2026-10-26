@@ -25,7 +25,10 @@ process.env.ROCKET_REQUIRE_POSTGRES = "";
 process.env.OPENAI_API_KEY = "";
 process.env.AI_GATEWAY_API_KEY = "";
 process.env.VERCEL_OIDC_TOKEN = "";
-process.env.ROCKET_OPENAI_ENCRYPTION_KEY = "";
+process.env.ROCKET_OPENAI_SERVER_MANAGED = "1";
+process.env.ROCKET_OPENAI_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString(
+  "base64",
+);
 process.env.ROCKET_ENGINE_CRON_SECRET = "";
 const { getDatabase, migrateConnections } =
   await import("../server/database.mjs");
@@ -121,6 +124,8 @@ try {
   assert.equal((await request("/api/mt5/analysis")).status, 401);
   passed("market data and analysis require the private browser cookie");
   assert.equal((await request("/api/mt5/orders")).status, 401);
+  assert.equal((await request("/api/mt5/reports?format=json")).status, 401);
+  assert.equal((await request("/api/mt5/reports?format=csv")).status, 401);
   passed("owned orders and EA symbols require the private browser cookie");
   for (const path of ["engine", "openai"]) {
     assert.equal((await request(`/api/mt5/${path}`)).status, 401);
@@ -150,25 +155,20 @@ try {
   );
   const settings = await (await request("/settings")).text();
   assert.ok(settings.includes("OPENAI AI CONNECTION"));
-  assert.ok(settings.includes("Save API Key"));
+  assert.ok(!settings.includes("Save API Key"));
   assert.ok(settings.includes("Test Connection"));
   assert.ok(!settings.includes("Add AI Gateway credits"));
   const passwordInput = settings.match(
     /<input(?=[^>]*type="password")[^>]*>/,
   )?.[0];
-  assert.ok(passwordInput);
-  assert.ok(!/value="[^"]+"/.test(passwordInput));
-  assert.ok(
-    passwordInput.includes('autocomplete="off"') ||
-      passwordInput.includes('autoComplete="off"'),
-  );
+  assert.equal(passwordInput, undefined);
   passed(
-    "OpenAI settings show a blank masked API-key field and direct secure controls",
+    "OpenAI settings expose server-managed status and testing without a browser key field",
   );
   for (const path of ["/", "/dashboard", "/mt5", "/settings"]) {
     const screen = await (await request(path)).text();
     assert.ok(
-      !/<(?:canvas|iframe)\b|TradingView|candlestick chart|Chat with AI|Start voice/i.test(
+      !/<(?:canvas|iframe)\b|TradingView|Chat with AI|Start voice/i.test(
         screen,
       ),
     );
@@ -176,11 +176,11 @@ try {
       assert.ok(screen.includes(label));
   }
   const home = await (await request("/")).text();
-  assert.ok(home.includes("START AI"));
+  assert.ok(home.includes("START AUTO TRADING"));
   assert.ok(home.includes("Emergency Stop"));
-  assert.ok(home.includes("Starts analysis."));
+  assert.ok(home.includes("Every strategy decision comes from OpenAI"));
   passed(
-    "four app screens expose Home/Market/MT5/Settings without chat, voice or chart surfaces",
+    "four app screens retain navigation and explicit Auto Trading controls without external charts, chat or voice",
   );
   assert.equal(
     (
@@ -609,14 +609,14 @@ try {
     "valid four-timeframe history over 64 KiB reaches the backend with trading disabled",
   );
   r = await request("/api/ea/heartbeat", {
-    headers,
-    body: { ...denseTelemetry, padding: "x".repeat(196608) },
+    // A rejected streaming upload can close its socket before the client has
+    // finished sending. Do not reuse that deliberately oversized connection.
+    headers: { ...headers, Connection: "close" },
+    body: { ...denseTelemetry, padding: "x".repeat(1048576) },
   });
   assert.equal(r.status, 413, await r.clone().text());
   assert.equal((await r.json()).error, "Request too large");
-  passed(
-    "EA requests exceeding 192 KiB are rejected before telemetry ingestion",
-  );
+  passed("EA requests exceeding 1 MiB are rejected before telemetry ingestion");
   const other = await (
     await request("/api/mt5/connections", { cookie: bob })
   ).json();
@@ -627,7 +627,10 @@ try {
     await request("/api/mt5/analysis", { cookie: alice })
   ).json();
   assert.equal(analysis.market.symbol, "XAUUSD");
-  assert.equal(analysis.market.bars.length, 100);
+  assert.equal(
+    analysis.market.bars.length,
+    denseMarket.timeframes.M5.bars.length,
+  );
   assert.deepEqual(analysis.market.bars, denseMarket.timeframes.M5.bars);
   for (const name of ["M1", "M5", "M15", "H1"])
     assert.deepEqual(
@@ -641,6 +644,38 @@ try {
   ).json();
   assert.equal(privateAnalysis.market, null);
   passed("authenticated terminal candles reach only their owning browser");
+  const reportResponse = await request("/api/mt5/reports?format=json", {
+    cookie: alice,
+  });
+  assert.equal(reportResponse.status, 200);
+  assert.ok(reportResponse.headers.get("cache-control").includes("no-store"));
+  const report = await reportResponse.json();
+  assert.equal(report.account.login, telemetry.accountLogin);
+  assert.equal(report.chart.symbol, denseMarket.symbol);
+  assert.deepEqual(
+    report.chart.timeframes.M5.bars,
+    denseMarket.timeframes.M5.bars,
+  );
+  assert.ok(!JSON.stringify(report).includes(token));
+  const visitorReport = await (
+    await request("/api/mt5/reports?format=json", { cookie: bob })
+  ).json();
+  assert.equal(visitorReport.account, null);
+  assert.equal(visitorReport.chart, null);
+  passed(
+    "private reports expose only the authenticated account and real EA candle payload",
+  );
+  const csvReport = await request("/api/mt5/reports?format=csv&download=1", {
+    cookie: alice,
+  });
+  assert.equal(csvReport.status, 200);
+  assert.ok(
+    csvReport.headers.get("content-disposition").includes("attachment"),
+  );
+  const csvText = await csvReport.text();
+  assert.ok(csvText.includes(denseMarket.symbol));
+  assert.ok(!csvText.includes(token));
+  passed("private CSV export downloads actual broker data without credentials");
   const start = await request("/api/mt5/engine", {
     cookie: alice,
     body: { action: "start" },
@@ -663,87 +698,16 @@ try {
   let liveState = await (
     await request("/api/mt5/trading", { cookie: alice })
   ).json();
-  const unavailableReview = await request("/api/mt5/trading", {
-    cookie: alice,
-    body: { action: "prepare-live", accountKey: liveState.accountKey },
-  });
-  assert.equal(unavailableReview.status, 403);
-  assert.equal(
-    (await unavailableReview.json()).code,
-    "DEMO_VALIDATION_REQUIRED",
-  );
+  for (const action of ["prepare-live", "confirm-live"]) {
+    const obsolete = await request("/api/mt5/trading", {
+      cookie: alice,
+      body: { action, accountKey: liveState.accountKey },
+    });
+    assert.equal(obsolete.status, 410);
+    assert.equal((await obsolete.json()).code, "UNIFIED_AI_CONTROL");
+  }
   passed(
-    "Live activation remains blocked until the real current-engine Demo gate passes",
-  );
-
-  // Explicit HTTP-only database fixture for confirmation security. This is not
-  // an actual Demo execution test and never reaches an AI provider or broker.
-  const [owner] = await db.query(
-    "SELECT user_id FROM rocket_direct_connections WHERE id=?",
-    [id],
-  );
-  await db.query(
-    "INSERT INTO rocket_engine_validation(user_id,engine_version,completed_at,evidence) VALUES(?,?,?,?)",
-    [
-      owner.user_id,
-      ENGINE_VERSION,
-      Date.now(),
-      JSON.stringify({
-        fixtureOnly: true,
-        purpose: "HTTP activation protocol",
-      }),
-    ],
-  );
-  r = await request("/api/mt5/trading", {
-    cookie: alice,
-    body: { action: "prepare-live", accountKey: liveState.accountKey },
-  });
-  assert.equal(r.status, 200, await r.clone().text());
-  assert.ok(r.headers.get("cache-control").includes("no-store"));
-  const review = await r.json();
-  assert.match(review.approvalId, /^[a-f0-9-]{36}$/);
-  assert.equal(review.account.type, "live");
-  assert.equal(review.account.login, "12345678");
-  assert.equal(review.account.server, "Broker-Live");
-  assert.equal(review.expiresAt - review.serverTime, 60000);
-  assert.equal(review.settings.maxPositions, 3);
-  passed(
-    "authenticated Live review privately returns the verified exact account and bounded risk settings",
-  );
-  const approval = {
-    action: "confirm-live",
-    approvalId: review.approvalId,
-    accountKey: review.accountKey,
-    confirmation: "ENABLE LIVE 12345678",
-    acknowledgedRisk: true,
-  };
-  r = await request("/api/mt5/trading", { cookie: bob, body: approval });
-  assert.ok([403, 409].includes(r.status));
-  const bobState = await (
-    await request("/api/mt5/trading", { cookie: bob })
-  ).json();
-  assert.equal(bobState.liveConfirmed, false);
-  assert.ok(!JSON.stringify(bobState).includes(review.approvalId));
-  r = await request("/api/mt5/trading", {
-    cookie: alice,
-    body: { ...approval, acknowledgedRisk: false },
-  });
-  assert.equal(r.status, 400);
-  r = await request("/api/mt5/trading", { cookie: alice, body: approval });
-  assert.equal(r.status, 200, await r.clone().text());
-  liveState = await (
-    await request("/api/mt5/trading", { cookie: alice })
-  ).json();
-  assert.equal(liveState.liveConfirmed, true);
-  assert.equal(liveState.permissionActive, false);
-  assert.equal(liveState.orders.length, 0);
-  assert.equal(
-    (await request("/api/mt5/trading", { cookie: alice, body: approval }))
-      .status,
-    409,
-  );
-  passed(
-    "one-time Live confirmation requires its owner and risk acknowledgement, rejects replay and never starts trading",
+    "obsolete account-type approval APIs cannot grant an independent execution permission",
   );
   assert.equal(
     (await request("/api/mt5/stop", { cookie: alice, body: {} })).status,
@@ -752,19 +716,10 @@ try {
   liveState = await (
     await request("/api/mt5/trading", { cookie: alice })
   ).json();
-  assert.equal(liveState.liveConfirmed, false);
   assert.equal(liveState.permissionActive, false);
-  assert.ok(
-    liveState.activationEvents.some(
-      (e) => e.event === "emergency_stop_all_live_permissions_revoked",
-    ),
-  );
-  await db.query(
-    "DELETE FROM rocket_engine_validation WHERE user_id=? AND engine_version=?",
-    [owner.user_id, ENGINE_VERSION],
-  );
+  assert.equal(liveState.orders.length, 0);
   passed(
-    "public Emergency Stop revokes activation, records an audit event and preserves the Demo gate",
+    "Emergency Stop revokes unified execution and leaves existing positions alone",
   );
   assert.equal(
     (
@@ -836,11 +791,11 @@ try {
   passed(
     "default download is a private self-contained MetaEditor source with a working scoped credential",
   );
-  assert.ok(personalizedSource.includes('#property version   "5.00"'));
+  assert.ok(personalizedSource.includes('#property version   "6.00"'));
   assert.ok(personalizedSource.includes(ENGINE_VERSION));
   assert.ok(personalizedSource.includes("TRADE_ACTION_SLTP"));
   passed(
-    "download includes the compiled-version-matched 5.00 four-timeframe broker execution source",
+    "download includes the compiled-version-matched 6.00 four-timeframe broker execution source",
   );
   assert.equal(
     (
@@ -855,10 +810,10 @@ try {
     cookie: alice,
     body: { action: "confirm-live", confirmation: "ENABLE LIVE 12345678" },
   });
-  assert.equal(consentAttempt.status, 403);
-  assert.equal((await consentAttempt.json()).code, "DEMO_VALIDATION_REQUIRED");
+  assert.equal(consentAttempt.status, 410);
+  assert.equal((await consentAttempt.json()).code, "UNIFIED_AI_CONTROL");
   passed(
-    "automatic trading needs current market verification and Live consent requires real Demo validation",
+    "automatic trading needs current OpenAI/broker readiness; obsolete Live gate cannot bypass unified START",
   );
   assert.equal(
     (
@@ -884,7 +839,11 @@ try {
         cookie: alice,
         body: {
           action: "settings",
-          settings: { maxDailyLossPct: 2, sizingMode: "capped", lotSize: 0.02 },
+          settings: {
+            maxDailyLossPct: 0.5,
+            sizingMode: "capped",
+            lotSize: 0.02,
+          },
         },
       })
     ).status,
@@ -893,7 +852,7 @@ try {
   let tradingState = await (
     await request("/api/mt5/trading", { cookie: alice })
   ).json();
-  assert.equal(tradingState.settings.maxDailyLossPct, 2);
+  assert.equal(tradingState.settings.maxDailyLossPct, 0.5);
   assert.equal(tradingState.settings.sizingMode, "capped");
   assert.equal(tradingState.settings.lotSize, 0.02);
   assert.equal(tradingState.liveConfirmed, false);

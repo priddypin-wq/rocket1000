@@ -18,7 +18,7 @@ for (const signal of ["SIGINT", "SIGTERM"])
     stopping = true;
   });
 console.log(
-  "ROCKET1000 persistent analysis worker started. No trading permission is granted by this process.",
+  "ROCKET1000 persistent analysis worker started. Recovery requires explicit saved Auto Trading ON, authenticated EA, verified OpenAI access and broker/risk checks.",
 );
 while (!stopping) {
   try {

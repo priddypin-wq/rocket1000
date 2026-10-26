@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import AppShell from "./app-shell";
 import AnalysisPanel from "./analysis-panel";
+import BrokerMarketTools from "./broker-chart";
 import { mt5Api } from "../../lib/mt5-client";
 import {
   brokerNumber,
@@ -477,6 +478,7 @@ export default function TradingDashboard() {
       active="Markets"
     >
       <ConnectedSymbols data={data} error={error} />
+      <BrokerMarketTools />
       <OpenOrders data={data} error={error} refresh={refresh} />
       <UpcomingOrders data={data} error={error} />
       <AnalysisPanel />

@@ -46,10 +46,10 @@ export function personalizedEaSource({
   const header = `// ROCKET1000 EA - your private, preconfigured connection.
 // Open in MetaEditor. Save As MQL5/Experts/ROCKET1000_EA.mq5, then Compile (F7).
 // Allow WebRequest for ${serverUrl}, then attach the compiled EA to one demo or live account chart.
-// Keep this file private. A replacement download revokes this installation.
+// Keep this file private. Re-downloads preserve this credential; Revoke EA access replaces it.
 // Connection credential expires: ${new Date(expiresAt).toISOString()}
 // No separate config file or manual token entry. Orders are disabled by default.
-// Start automatic or reviewed orders explicitly in Account & settings after the risk checks pass.
+// Use START AI after OpenAI verification and the broker/risk checks pass.
 `;
   const rendered =
     header + template.slice(0, from) + loader + template.slice(to + end.length);

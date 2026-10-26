@@ -25,9 +25,13 @@ const execution = {
   existingRisk: 0,
   freeMargin: 18000,
   pendingOrders: 0,
-  tradeAllowed: false,
+  tradeAllowed: true,
   stopsVerified: true,
-  newsVerified: false,
+  costsVerified: true,
+  commissionPerLot: 0,
+  consecutiveLosses: 0,
+  consecutiveLossesVerified: true,
+  newsVerified: true,
   newsBlocked: false,
   terminalId: "0123456789abcdef01234567",
 };
@@ -126,6 +130,87 @@ test("START requires an actual scheduler check-in and never claims an unstarted 
     await f.db.close();
   }
 });
+
+for (const [label, patch] of [
+  ["Algo Trading disabled", { tradeAllowed: false }],
+])
+  test(`unified START cannot authorize execution with ${label}`, async () => {
+    const f = await setup({ executionPatch: patch });
+    try {
+      await f.engine.heartbeat();
+      await assert.rejects(f.engine.start("alice"));
+      assert.equal(f.calls(), 0);
+      assert.equal(
+        (await f.db.query("SELECT * FROM rocket_trade_policy")).length,
+        0,
+      );
+    } finally {
+      await f.db.close();
+    }
+  });
+
+for (const [label, patch] of [
+  ["broker costs unknown", { costsVerified: false }],
+  ["loss streak unknown", { consecutiveLossesVerified: false }],
+  ["three consecutive losses", { consecutiveLosses: 3 }],
+])
+  test(`unified analysis cannot submit orders with ${label}`, async () => {
+    const f = await setup({ executionPatch: patch });
+    try {
+      await f.engine.heartbeat();
+      await f.engine.start("alice");
+      assert.equal(
+        (await tradingService(f.db, { now: f.now }).status("alice")).enabled,
+        false,
+      );
+      await f.engine.cycle(f.id);
+      assert.equal(
+        (await f.db.query("SELECT * FROM rocket_trade_commands")).length,
+        0,
+      );
+    } finally {
+      await f.db.close();
+    }
+  });
+
+test("failed real-provider verification cannot create a unified permission or paid analysis cycle", async () => {
+  const f = await setup({
+    credentials: {
+      status: async () => ({
+        configured: true,
+        revision: "billing-fixture",
+        connection: { connected: false },
+      }),
+      test: async () => ({
+        connected: false,
+        error: "Fixture credits unavailable",
+        errorCode: "AI_BILLING_REQUIRED",
+      }),
+      environment: async () => {
+        throw Error("No analysis key may be resolved");
+      },
+    },
+  });
+  try {
+    await f.engine.heartbeat();
+    await assert.rejects(
+      f.engine.start("alice"),
+      (e) => e.code === "AI_BILLING_REQUIRED",
+    );
+    assert.equal((await f.engine.status("alice")).state, "suspended");
+    assert.equal(
+      (await f.db.query("SELECT * FROM rocket_trade_policy")).length,
+      0,
+    );
+    assert.equal(
+      (await f.db.query("SELECT * FROM rocket_trade_commands")).length,
+      0,
+    );
+    assert.equal(f.calls(), 0);
+  } finally {
+    await f.db.close();
+  }
+});
 test("queue scheduler liveness is scoped to its connection and execution requires the exact active run", async () => {
   const f = await setup();
   const otherConnection = "01234567-89ab-cdef-0123-456789abcdef";
@@ -217,7 +302,7 @@ test("queue scheduler heartbeats reject unscoped identifiers", async () => {
   }
 });
 for (const type of ["demo", "live"])
-  test(`START on ${type} analyses only: real analysis code, fixture Responses transport, no trading policy or commands`, async () => {
+  test(`START on ${type} binds the unified account session; a WAIT assessment never creates a broker command`, async () => {
     const f = await setup({ type });
     try {
       await f.engine.heartbeat();
@@ -225,8 +310,9 @@ for (const type of ["demo", "live"])
       assert.equal(started.state, "scheduled");
       assert.equal(
         (await f.db.query("SELECT * FROM rocket_trade_policy")).length,
-        0,
+        1,
       );
+      assert.equal(started.executionAuthorized, true);
       assert.equal((await f.engine.cycle(f.id)).state, "scheduled");
       assert.equal(f.calls(), 1);
       const [a] = await f.db.query(
@@ -374,28 +460,35 @@ test("provider billing failure suspends persistent engine and revokes new work w
     await f.db.close();
   }
 });
-test("stale EA heartbeat suspends analysis before a model request", async () => {
+test("stale EA heartbeat waits without paid requests or new submissions", async () => {
   const f = await setup();
   try {
     await f.engine.heartbeat();
     await f.engine.start("alice");
     f.advance(31001);
     await f.engine.cycle(f.id);
-    assert.equal((await f.engine.status("alice")).state, "suspended");
+    assert.equal((await f.engine.status("alice")).state, "scheduled");
+    assert.match(
+      (await f.engine.status("alice")).reason,
+      /fresh authenticated broker data/,
+    );
     assert.equal(f.calls(), 0);
   } finally {
     await f.db.close();
   }
 });
-test("terminal session switching invalidates a persisted analysis run", async () => {
+test("same authorized terminal session reconnect resumes monitoring with no duplicate order", async () => {
   const f = await setup();
   try {
     await f.engine.heartbeat();
     await f.engine.start("alice");
-    await f.send("abcdef0123456789abcdef01");
-    await f.engine.cycle(f.id);
-    assert.equal((await f.engine.status("alice")).state, "suspended");
+    await f.send("abcdef0123456789abcdef01", true);
+    assert.equal((await f.engine.status("alice")).state, "scheduled");
     assert.equal(f.calls(), 0);
+    assert.equal(
+      (await f.db.query("SELECT id FROM rocket_trade_commands")).length,
+      0,
+    );
   } finally {
     await f.db.close();
   }
@@ -457,7 +550,9 @@ test("offline worker is reported suspended and cannot claim to be running indefi
 });
 
 for (const model of ["gpt-6.1-sol", "gpt-5-mini"])
-  test(`the production worker reuses one verified ${model} assessment for separately authorized Demo commands`, async () => {
+  test(`the production worker reuses one verified ${model} assessment for unified authorized Demo commands`, async () => {
+    const previousModel = process.env.OPENAI_MODEL;
+    process.env.OPENAI_MODEL = model;
     const f = await setup({
       executionPatch: { tradeAllowed: true, newsVerified: true },
       provider: async () => {
@@ -479,26 +574,10 @@ for (const model of ["gpt-6.1-sol", "gpt-5-mini"])
     });
     try {
       f.env.OPENAI_MODEL = model;
-      if (model !== "gpt-6.1-sol")
-        await f.db.query(
-          "INSERT INTO rocket_openai_credentials(user_id,version,model,revision,updated_at) VALUES(?,?,?,?,?)",
-          ["alice", 1, model, "fixture-r1", f.now()],
-        );
       await f.engine.heartbeat();
       await f.engine.start("alice");
       const trade = tradingService(f.db, { now: f.now });
-      await assert.rejects(
-        trade.act("alice", {
-          action: "start-auto",
-          accountKey: (await trade.status("alice")).accountKey,
-        }),
-        (e) => e.code === "DEMO_AUTHORIZATION_REQUIRED",
-      );
-      await trade.act("alice", {
-        action: "start-auto",
-        accountKey: (await trade.status("alice")).accountKey,
-        confirmation: "ENABLE DEMO 12345678",
-      });
+      assert.equal((await trade.status("alice")).permissionActive, true);
       await f.engine.cycle(f.id);
       const rows = await f.db.query(
         "SELECT payload,status FROM rocket_trade_commands",
@@ -508,7 +587,7 @@ for (const model of ["gpt-6.1-sol", "gpt-5-mini"])
       const order = JSON.parse(rows[0].payload);
       assert.equal(order.source, "ai");
       assert.equal(order.kind, "OPEN");
-      assert.ok(order.riskPercent <= 0.5);
+      assert.ok(order.riskPercent <= 0.25);
       assert.ok(order.volume <= 0.1);
       assert.ok(order.analysisId);
       assert.equal(
@@ -527,9 +606,69 @@ for (const model of ["gpt-6.1-sol", "gpt-5-mini"])
         0,
       );
     } finally {
+      if (previousModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = previousModel;
       await f.db.close();
     }
   });
+test("server secret rotation rejects an in-flight analysis without exposing its internal revision", async () => {
+  const previous = Object.fromEntries(
+    ["OPENAI_API_KEY", "OPENAI_MODEL", "ROCKET_OPENAI_SERVER_MANAGED"].map(
+      (k) => [k, process.env[k]],
+    ),
+  );
+  Object.assign(process.env, {
+    OPENAI_API_KEY: "sk-fixture-server-key-one",
+    OPENAI_MODEL: "gpt-6.1-sol",
+    ROCKET_OPENAI_SERVER_MANAGED: "1",
+  });
+  const f = await setup();
+  const entered = deferred(),
+    release = deferred();
+  const engine = engineService(f.db, {
+    now: f.now,
+    provider: async (payload) => {
+      const r = response();
+      r.output[0].role = "assistant";
+      if (!payload.text?.format) r.output[0].content[0].text = "ROCKET1000_OK";
+      else {
+        entered.resolve();
+        await release.promise;
+      }
+      return r;
+    },
+  });
+  try {
+    // setup's seed is telemetry only; the actual credential resolver and
+    // metered provider wrapper below are used, with injected transport output.
+    await engine.heartbeat();
+    await engine.start("alice");
+    const pending = engine.cycle(f.id);
+    await entered.promise;
+    process.env.OPENAI_API_KEY = "sk-fixture-server-key-two";
+    assert.equal(
+      (await tradingService(f.db, { now: f.now }).status("alice"))
+        .permissionActive,
+      false,
+    );
+    release.resolve();
+    await pending;
+    assert.equal((await engine.status("alice")).state, "suspended");
+    const analyses = await f.db.query("SELECT status FROM rocket_analyses");
+    assert.ok(analyses.every((r) => r.status !== "completed"));
+    const visible = JSON.stringify(await engine.status("alice"));
+    assert.ok(!visible.includes("sk-fixture-server-key"));
+    assert.ok(!visible.includes("environment:"));
+  } finally {
+    release.resolve();
+    await f.db.close();
+    for (const [k, v] of Object.entries(previous)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test("an old provider failure cannot suspend a newer explicitly restarted run", async () => {
   const entered = deferred(),
     release = deferred();
@@ -601,6 +740,7 @@ for (const action of ["save", "remove"])
         now: f.now,
         env: {
           ...f.env,
+          ROCKET_OPENAI_SERVER_MANAGED: "0",
           ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
         },
         onChange: credentialChanged,

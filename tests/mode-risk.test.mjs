@@ -39,6 +39,10 @@ function context({
     pendingOrders: 0,
     tradeAllowed: true,
     stopsVerified: true,
+    costsVerified: true,
+    commissionPerLot: 0,
+    consecutiveLosses: 0,
+    consecutiveLossesVerified: true,
     newsVerified: true,
     newsBlocked: false,
     ...broker,
@@ -87,31 +91,31 @@ test("adaptive sizing is the default and the old 0.01 preference does not cap it
   const ctx = context();
   assert.equal(ctx.settings.lotSize, 0.01);
   const approved = orderRisk(ctx, intent(ctx));
-  assert.equal(approved.volume, 0.19);
+  assert.equal(approved.volume, 0.09);
   assert.ok(approved.volume > ctx.settings.lotSize);
-  assert.ok(approved.riskAmount <= 100 + 1e-8);
-  assert.equal(approved.riskPercent, 0.5);
+  assert.ok(approved.riskAmount <= 50 + 1e-8);
+  assert.equal(approved.riskPercent, 0.25);
 });
 
 test("lots rise and fall with verified funds, using the smaller of balance and equity", () => {
   for (const [funds, equity, expected] of [
-    [10000, 10000, 0.09],
-    [20000, 20000, 0.19],
-    [40000, 40000, 0.39],
-    [20000, 10000, 0.09],
-    [10000, 20000, 0.09],
+    [10000, 10000, 0.04],
+    [20000, 20000, 0.09],
+    [40000, 40000, 0.19],
+    [20000, 10000, 0.04],
+    [10000, 20000, 0.04],
   ]) {
     const ctx = context({ funds, equity });
     const approved = orderRisk(ctx, intent(ctx));
     assert.equal(approved.volume, expected);
-    assert.ok(approved.riskAmount <= Math.min(funds, equity) * 0.005 + 1e-8);
+    assert.ok(approved.riskAmount <= Math.min(funds, equity) * 0.0025 + 1e-8);
   }
 });
 
 test("Balanced and Aggressive keep their hard risk caps and honor lower configured risk", () => {
   for (const [settings, expectedRisk, expectedVolume] of [
-    [{ tradingMode: "balanced" }, 0.5, 0.19],
-    [{ tradingMode: "aggressive" }, 0.5, 0.19],
+    [{ tradingMode: "balanced" }, 0.25, 0.09],
+    [{ tradingMode: "aggressive" }, 0.25, 0.09],
     [{ tradingMode: "balanced", riskPerTradePct: 0.2 }, 0.2, 0.07],
     [{ tradingMode: "aggressive", riskPerTradePct: 0.2 }, 0.2, 0.07],
   ]) {
@@ -127,7 +131,7 @@ test("Balanced and Aggressive keep their hard risk caps and honor lower configur
 
 test("broker volume limits, explicit order caps, and an optional saved lot cap all restrict automatic sizing", () => {
   const broker = context({ broker: { maxVolume: 0.12 } });
-  assert.equal(orderRisk(broker, intent(broker)).volume, 0.12);
+  assert.equal(orderRisk(broker, intent(broker)).volume, 0.09);
   const explicit = context();
   assert.equal(
     orderRisk(explicit, intent(explicit, { maxLots: 0.04 })).volume,
@@ -138,7 +142,7 @@ test("broker volume limits, explicit order caps, and an optional saved lot cap a
   const capAboveBudget = context({
     settings: { sizingMode: "capped", lotSize: 1 },
   });
-  assert.equal(orderRisk(capAboveBudget, intent(capAboveBudget)).volume, 0.19);
+  assert.equal(orderRisk(capAboveBudget, intent(capAboveBudget)).volume, 0.09);
 });
 
 test("risky volatility reduces the risk budget instead of forcing the broker minimum", () => {
@@ -150,12 +154,12 @@ test("risky volatility reduces the risk budget instead of forcing the broker min
   }
   ctx.market.bars = structuredClone(ctx.market.timeframes.M5.bars);
   ctx.profile = adaptiveProfile(ctx.market, ctx.settings);
-  assert.ok(ctx.profile.effectiveRiskPct < 0.5);
+  assert.ok(ctx.profile.effectiveRiskPct < 0.25);
   if (ctx.profile.effectiveRiskPct === 0) {
     assert.throws(() => orderRisk(ctx, intent(ctx)));
   } else {
     const approved = orderRisk(ctx, intent(ctx));
-    assert.ok(approved.volume < 0.19);
+    assert.ok(approved.volume < 0.09);
     assert.ok(
       approved.riskAmount <=
         (20000 * ctx.profile.effectiveRiskPct) / 100 + 1e-8,
@@ -193,8 +197,8 @@ test("untrusted sizing, permissions and AI provenance never survive the approved
       originTerminal: "attacker",
     }),
   );
-  assert.equal(approved.volume, 0.19);
-  assert.equal(approved.riskPercent, 0.5);
+  assert.equal(approved.volume, 0.09);
+  assert.equal(approved.riskPercent, 0.25);
   for (const key of [
     "source",
     "analysisId",
@@ -215,15 +219,15 @@ test("authorization repeats current confidence, protective distance and reward-t
   ctx.profile.minConfidence = 0.95;
   assert.throws(() => orderRisk(ctx, order), /confidence/);
   ctx.profile.minConfidence = 0.8;
-  ctx.market.bid -= 0.05;
-  ctx.market.ask -= 0.05;
-  assert.throws(() => orderRisk(ctx, order), /protective distances/);
+  ctx.market.bid = order.stop + 0.05;
+  ctx.market.ask = ctx.market.bid + 0.2;
+  assert.throws(() => orderRisk(ctx, order), /distance|Protective stop/);
   const rr = context({ settings: { takeProfitPoints: 500 } });
-  const marginal = intent(rr, { ...provenance(rr), takeProfit: 2107.7 });
+  const marginal = intent(rr, { ...provenance(rr), takeProfit: 2108.2 });
   assert.doesNotThrow(() => orderRisk(rr, marginal));
   rr.market.bid += 0.05;
   rr.market.ask += 0.05;
-  assert.throws(() => orderRisk(rr, marginal), /selected AI mode/);
+  assert.throws(() => orderRisk(rr, marginal), /reward after verified costs/);
 });
 
 test("automatic intent respects AI proposed lots and broker maximum while risk can only reduce actual volume", () => {
@@ -246,7 +250,7 @@ test("automatic intent respects AI proposed lots and broker maximum while risk c
   };
   let order = automaticIntent(ctx, assessment);
   assert.equal(order.maxLots, ctx.execution.maxVolume);
-  assert.equal(orderRisk(ctx, order).volume, 0.19);
+  assert.equal(orderRisk(ctx, order).volume, 0.09);
   ctx.settings = { ...ctx.settings, sizingMode: "capped" };
   order = automaticIntent(ctx, assessment);
   assert.equal(order.maxLots, 0.01);

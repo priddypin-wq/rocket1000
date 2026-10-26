@@ -33,7 +33,13 @@ export async function mt5Api(path: string, body?: unknown) {
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) initialization = null;
-    throw new Error(data.error || "Unable to reach the connection server.");
+    throw Object.assign(
+      new Error(data.error || "Unable to reach the connection server."),
+      {
+        code: typeof data.code === "string" ? data.code : "REQUEST_FAILED",
+        status: response.status,
+      },
+    );
   }
   return response;
 }

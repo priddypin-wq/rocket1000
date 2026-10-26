@@ -13,12 +13,12 @@ function snapshot(direction) {
     Object.entries(TIMEFRAMES).map(([name, seconds]) => [
       name,
       {
-        bars: Array.from({ length: 100 }, (_, i) => {
-          const close = direction === "up" ? 100 + i : 300 - i;
+        bars: Array.from({ length: 220 }, (_, i) => {
+          const close = direction === "up" ? 100 + i : 600 - i;
           return {
             time:
               Math.floor(NOW / (seconds * 1000)) * seconds -
-              (100 - i) * seconds,
+              (220 - i) * seconds,
             open: close - 0.25,
             high: close + 1,
             low: close - 1,
@@ -29,7 +29,7 @@ function snapshot(direction) {
       },
     ]),
   );
-  const bid = direction === "up" ? 199 : 201;
+  const bid = direction === "up" ? 319 : 381;
   return {
     symbol: "XAUUSD",
     timeframe: "M5",
@@ -92,6 +92,10 @@ function context(market, profile, tradingMode) {
       newsVerified: true,
       newsBlocked: false,
       stopsVerified: true,
+      costsVerified: true,
+      commissionPerLot: 0,
+      consecutiveLosses: 0,
+      consecutiveLossesVerified: true,
     },
   };
 }

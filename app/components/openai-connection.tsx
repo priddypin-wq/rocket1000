@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { mt5Api } from "../../lib/mt5-client";
 
 type Metadata = {
+  serverManaged?: boolean;
+  disabledByRemoval?: boolean;
   configured: boolean;
   verified?: boolean;
   state?: string;
@@ -53,6 +55,10 @@ export default function OpenAiConnection() {
   async function perform(action: "save" | "test" | "remove") {
     setIssue("");
     setNotice("");
+    if (action !== "test" && status?.serverManaged !== false) {
+      setIssue("The server operator manages the OpenAI connection.");
+      return;
+    }
     // Read only at submission. Clear immediately; saved keys never populate this field.
     const key = action === "save" ? keyInput.current?.value.trim() : undefined;
     if (keyInput.current) keyInput.current.value = "";
@@ -62,7 +68,7 @@ export default function OpenAiConnection() {
     }
     if (location.protocol !== "https:") {
       setIssue(
-        "Use the secure HTTPS app to save, test or remove your API key.",
+        "Use the secure HTTPS app to manage or test the OpenAI connection.",
       );
       return;
     }
@@ -83,7 +89,7 @@ export default function OpenAiConnection() {
         action === "save"
           ? "API key saved securely. Test the connection before starting AI."
           : action === "remove"
-            ? "API key removed. AI must be configured and verified before it can start."
+            ? "API key removed. AI analysis and new automated orders are stopped. Save and verify a key before restarting."
             : metadata.verified || metadata.connection?.connected
               ? "OpenAI connection verified. No trades were submitted."
               : "Verification did not succeed. Review the connection error.",
@@ -113,6 +119,8 @@ export default function OpenAiConnection() {
   const verified =
     !issue && (status?.verified || status?.connection?.connected);
   const storageReady = status?.encryptionReady ?? status?.storageReady;
+  // Missing/loading metadata stays in the default environment-only mode.
+  const serverManaged = status?.serverManaged !== false;
   return (
     <section
       className="inner-card openai-connection"
@@ -134,71 +142,115 @@ export default function OpenAiConnection() {
                 : "Disconnected"}
         </span>
       </div>
-      <p>Your paid OpenAI API account powers this engine.</p>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void perform("save");
-        }}
-      >
-        <label className="trade-field">
-          {status?.configured ? "Replace API key" : "OpenAI API key"}
-          <input
-            ref={keyInput}
-            type="password"
-            name="openai-api-key"
-            autoComplete="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            placeholder="Enter API key"
-            disabled={!!busy || storageReady === false}
-            required
-            data-1p-ignore="true"
-            data-lpignore="true"
-          />
-        </label>
-        <details className="settings-inline-details">
-          <summary>Reasoning model</summary>
+      <p>
+        The configured OpenAI account powers strategy analysis. Independent risk
+        checks and broker-side protective stops remain enforced.
+      </p>
+      {serverManaged ? (
+        <div>
+          <p className="inner-caption">
+            Server managed. The server operator configures the OpenAI connection
+            and model. API keys are never entered or displayed here.
+          </p>
+          <p>
+            Configuration:{" "}
+            {status
+              ? status.configured
+                ? "Configured"
+                : "Unavailable"
+              : "Checking…"}
+            <br />
+            Model: <strong>{status?.model || "Checking…"}</strong>
+          </p>
+          {status?.disabledByRemoval ? (
+            <p className="inner-error" role="alert">
+              AI requests remain disabled following a previous credential
+              removal. The server operator must review this workspace before
+              reconnecting.
+            </p>
+          ) : status && !status.configured ? (
+            <p className="inner-error" role="alert">
+              The server operator must configure the OpenAI connection before AI
+              analysis can start.
+            </p>
+          ) : null}
+          <div className="engine-actions">
+            <button
+              className="action-outline"
+              type="button"
+              disabled={!!busy || !status?.configured}
+              onClick={() => void perform("test")}
+            >
+              {busy === "test" ? "Testing…" : "Test Connection"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void perform("save");
+          }}
+        >
           <label className="trade-field">
-            Model available to your OpenAI account
+            {status?.configured ? "Replace API key" : "OpenAI API key"}
             <input
-              ref={modelInput}
-              name="model"
-              placeholder={
-                status?.model || "Use the server’s configured reasoning model"
-              }
+              ref={keyInput}
+              type="password"
+              name="openai-api-key"
               autoComplete="off"
-              disabled={!!busy}
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="Enter API key"
+              disabled={!!busy || storageReady === false}
+              required
+              data-1p-ignore="true"
+              data-lpignore="true"
             />
           </label>
-          <p className="inner-caption">
-            A real API test verifies model access. A model name alone does not
-            confirm availability.
-          </p>
-        </details>
-        <div className="engine-actions">
-          <button
-            className="action-red"
-            type="submit"
-            disabled={!!busy || storageReady === false}
-          >
-            {busy === "save"
-              ? "Saving…"
-              : status?.configured
-                ? "Replace API Key"
-                : "Save API Key"}
-          </button>
-          <button
-            className="action-outline"
-            type="button"
-            disabled={!!busy || !status?.configured}
-            onClick={() => void perform("test")}
-          >
-            {busy === "test" ? "Testing…" : "Test Connection"}
-          </button>
-        </div>
-      </form>
-      {status?.configured ? (
+          <details className="settings-inline-details">
+            <summary>Reasoning model</summary>
+            <label className="trade-field">
+              Model available to your OpenAI account
+              <input
+                ref={modelInput}
+                name="model"
+                placeholder={
+                  status?.model || "Use the server’s configured reasoning model"
+                }
+                autoComplete="off"
+                disabled={!!busy}
+              />
+            </label>
+            <p className="inner-caption">
+              A real API test verifies model access. A model name alone does not
+              confirm availability.
+            </p>
+          </details>
+          <div className="engine-actions">
+            <button
+              className="action-red"
+              type="submit"
+              disabled={!!busy || storageReady === false}
+            >
+              {busy === "save"
+                ? "Saving…"
+                : status?.configured
+                  ? "Replace API Key"
+                  : "Save API Key"}
+            </button>
+            <button
+              className="action-outline"
+              type="button"
+              disabled={!!busy || !status?.configured}
+              onClick={() => void perform("test")}
+            >
+              {busy === "test" ? "Testing…" : "Test Connection"}
+            </button>
+          </div>
+        </form>
+      )}
+      {!serverManaged && status?.configured ? (
         <button
           className="inner-text-button"
           type="button"
@@ -208,7 +260,7 @@ export default function OpenAiConnection() {
           Remove API Key
         </button>
       ) : null}
-      {removing ? (
+      {!serverManaged && removing ? (
         <div className="trade-review">
           <p>
             Remove this app’s saved OpenAI key and stop further AI requests?
@@ -232,7 +284,7 @@ export default function OpenAiConnection() {
           </div>
         </div>
       ) : null}
-      {storageReady === false ? (
+      {!serverManaged && storageReady === false ? (
         <p className="inner-error" role="alert">
           Secure server encryption is not configured. Key saving remains
           unavailable until setup is complete.
@@ -249,8 +301,10 @@ export default function OpenAiConnection() {
         </p>
       ) : null}
       <p className="inner-caption">
-        Encrypted on the server. Saved keys are never shown again. Connection
-        testing uses a small paid API request and submits no trades.
+        {serverManaged
+          ? "Credentials stay in server configuration. "
+          : "Encrypted on the server. Saved keys are never shown again. "}
+        Connection testing uses a small paid API request and submits no trades.
       </p>
       <a
         className="inner-text-link"
@@ -261,8 +315,9 @@ export default function OpenAiConnection() {
         OpenAI API billing ↗
       </a>
       <p className="inner-caption">
-        Sign into the organization that owns the key you saved. The app cannot
-        sign you into that organization or pay its bill.
+        {serverManaged
+          ? "Billing is managed by the organization that owns the server’s OpenAI account."
+          : "Sign into the organization that owns the key you saved. The app cannot sign you into that organization or pay its bill."}
       </p>
     </section>
   );

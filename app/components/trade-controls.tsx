@@ -10,7 +10,6 @@ import Link from "next/link";
 import { mt5Api } from "../../lib/mt5-client";
 import { useAnalysisEngine } from "../../lib/use-analysis-engine";
 import type { AutoState } from "../../lib/trading-types";
-import LiveActivation from "./live-activation";
 
 type State = AutoState & {
   enabled: boolean;
@@ -39,9 +38,6 @@ export default function TradeControls({
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopNotice, setStopNotice] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [reviewAccountKey, setReviewAccountKey] = useState("");
-  const demoDialog = useRef<HTMLDialogElement>(null);
   const request = useRef(0);
   const engine = useAnalysisEngine();
   const refresh = useCallback(async () => {
@@ -77,13 +73,6 @@ export default function TradeControls({
       clearInterval(timer);
     };
   }, [refresh]);
-  useEffect(() => {
-    if (
-      reviewAccountKey &&
-      (reviewAccountKey !== data?.accountKey || pollError)
-    )
-      demoDialog.current?.close();
-  }, [data?.accountKey, pollError, reviewAccountKey]);
   const action = async (body: unknown) => {
     setBusy(true);
     setIssue("");
@@ -102,14 +91,6 @@ export default function TradeControls({
   };
   const account = data?.account;
   const running = data?.automation?.state === "running";
-  const blocked =
-    !!pollError ||
-    !account ||
-    !data?.market ||
-    !!data.connectionBlockers?.length;
-  const phrase = account
-    ? `ENABLE ${account.type.toUpperCase()} ${account.login}`
-    : "";
   return (
     <div className="settings-simple">
       {aiStatus}
@@ -146,136 +127,15 @@ export default function TradeControls({
           </b>
         </div>
         <p>
-          START AI runs analysis. These separate controls authorize genuine
-          broker orders for this account only.
+          Start Auto Trading on Home verifies OpenAI and authorizes one engine
+          session for this exact account and EA. Demo and Live use the same
+          engine and hard risk checks. A saved ON session can resume only after
+          account and execution permissions are verified again. Stop and
+          Emergency Stop stay OFF.
         </p>
-        {running ? (
-          <button
-            className="action-outline"
-            disabled={busy || stopping}
-            onClick={() =>
-              void action({
-                action: "pause-auto",
-                accountKey: data?.accountKey,
-              })
-            }
-          >
-            Disable automatic execution
-          </button>
-        ) : account?.type === "demo" ? (
-          <button
-            className="action-outline"
-            disabled={busy || stopping || blocked}
-            onClick={() => {
-              setConfirmation("");
-              setIssue("");
-              setReviewAccountKey(data?.accountKey || "");
-              demoDialog.current?.showModal();
-            }}
-          >
-            Authorize Demo execution
-          </button>
-        ) : null}
-        <LiveActivation
-          key={`${data?.accountKey}:${data?.sessionId}:${data?.installationId}:${data?.settingsRevision}`}
-          data={data}
-          busy={busy || stopping}
-          action={action}
-          serverError={issue}
-        />
-        {!running && account?.type === "live" && data?.liveConfirmed ? (
-          <button
-            className="action-red"
-            disabled={
-              busy || stopping || blocked || !data.demoValidation?.passed
-            }
-            onClick={() =>
-              void action({ action: "start-auto", accountKey: data.accountKey })
-            }
-          >
-            Enable authorized Live execution
-          </button>
-        ) : null}
-        {account && data?.positions?.length ? (
-          <details
-            className="settings-inline-details"
-            key={`reviewed:${data.accountKey}:${data.sessionId}`}
-          >
-            <summary>Reviewed position-close permission</summary>
-            <p>
-              Account {account.login} · {account.server} ·{" "}
-              {account.type.toUpperCase()}.
-            </p>
-            <p>
-              This permits separately reviewed, user-confirmed full closes in
-              Market. It does not start AI or automatic trading, and does not
-              close any position by itself.
-            </p>
-            {data.enabled ? (
-              <>
-                <p className="inner-caption">
-                  Reviewed permission{" "}
-                  {data.expiresAt
-                    ? `expires ${new Date(data.expiresAt).toLocaleTimeString()}`
-                    : "is enabled for this verified EA session"}
-                  .
-                </p>
-                <button
-                  className="action-outline"
-                  disabled={busy || stopping}
-                  onClick={() => void action({ action: "disable" })}
-                >
-                  Disable reviewed permission
-                </button>
-              </>
-            ) : (
-              <form
-                onSubmit={async (event) => {
-                  event.preventDefault();
-                  const typed = String(
-                    new FormData(event.currentTarget).get(
-                      "accountConfirmation",
-                    ) || "",
-                  );
-                  if (typed !== phrase) {
-                    setIssue(`Type ${phrase} exactly to confirm this account.`);
-                    return;
-                  }
-                  await action({
-                    action: "enable",
-                    accountKey: data.accountKey,
-                    confirmation: typed,
-                  });
-                }}
-              >
-                <label className="trade-field">
-                  Type {phrase}
-                  <input
-                    name="accountConfirmation"
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-                <button
-                  className="action-outline"
-                  disabled={
-                    busy || stopping || blocked || !!data.blockers?.length
-                  }
-                >
-                  Enable reviewed closes for 15 minutes
-                </button>
-              </form>
-            )}
-            <p className="inner-caption">
-              Live account approval and current-engine Demo validation still
-              apply. If a safety check blocks management here, review or close
-              the position directly in MT5.
-            </p>
-            <Link className="inner-text-link" href="/dashboard">
-              Review open positions →
-            </Link>
-          </details>
-        ) : null}
+        <Link className="inner-text-link" href="/">
+          Auto Trading ON / OFF →
+        </Link>
         {data?.connectionBlockers?.length || data?.blockers?.length ? (
           <details className="settings-inline-details">
             <summary>Account safety checks</summary>
@@ -300,47 +160,78 @@ export default function TradeControls({
           <span>STRATEGY & HARD RISK LIMITS</span>
           <span className="inner-tag">ALWAYS ENFORCED</span>
         </div>
+        <p>
+          OpenAI selects Scalping, Trend, Breakout, Reversal or WAIT from
+          verified market conditions. It cannot raise the hard limits below.
+        </p>
         {data?.settings ? (
-          <form
-            key={data.settingsRevision || "settings"}
-            onSubmit={async (event) => {
-              event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              await action({
-                action: "settings",
-                settings: {
-                  ...data.settings,
-                  strategy: form.get("strategy"),
-                  riskPerTradePct: Number(form.get("riskPerTradePct")),
-                },
-              });
-            }}
-          >
-            <label className="trade-field">
-              AI strategy
-              <select name="strategy" defaultValue={data.settings.strategy}>
-                <option value="adaptive">Adaptive AI</option>
-                <option value="price-action">Price Action</option>
-                <option value="scalping">Scalping</option>
-              </select>
-            </label>
-            <label className="trade-field">
-              Maximum risk per trade (%)
-              <input
-                name="riskPerTradePct"
-                type="number"
-                min="0.1"
-                max="0.5"
-                step="0.1"
-                required
-                inputMode="decimal"
-                defaultValue={Math.min(0.5, data.settings.riskPerTradePct)}
-              />
-            </label>
-            <button className="action-outline" disabled={busy || stopping}>
-              Save risk & strategy
-            </button>
-          </form>
+          <details className="settings-inline-details">
+            <summary>Lower your risk cap</summary>
+            <form
+              key={data.settingsRevision || "settings"}
+              onSubmit={async (event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                await action({
+                  action: "settings",
+                  settings: {
+                    ...data.settings,
+                    strategy: "adaptive",
+                    riskPerTradePct: Number(form.get("riskPerTradePct")),
+                    maxAggregateRiskPct: Number(
+                      form.get("maxAggregateRiskPct"),
+                    ),
+                    maxDailyLossPct: Number(form.get("maxDailyLossPct")),
+                    maxDrawdownPct: Number(form.get("maxDrawdownPct")),
+                  },
+                });
+              }}
+            >
+              <label className="trade-field">
+                Maximum risk per trade (%)
+                <input
+                  name="riskPerTradePct"
+                  type="number"
+                  min="0.05"
+                  max="0.25"
+                  step="0.05"
+                  required
+                  inputMode="decimal"
+                  defaultValue={Math.min(0.25, data.settings.riskPerTradePct)}
+                />
+              </label>
+              {(
+                [
+                  [
+                    "maxAggregateRiskPct",
+                    "Maximum total open risk (%)",
+                    0.05,
+                    0.25,
+                    0.05,
+                  ],
+                  ["maxDailyLossPct", "Maximum daily loss (%)", 0.1, 1, 0.1],
+                  ["maxDrawdownPct", "Maximum drawdown (%)", 0.1, 5, 0.1],
+                ] as const
+              ).map(([name, label, min, max, step]) => (
+                <label className="trade-field" key={name}>
+                  {label}
+                  <input
+                    name={name}
+                    type="number"
+                    min={min}
+                    max={max}
+                    step={step}
+                    required
+                    inputMode="decimal"
+                    defaultValue={Math.min(max, data.settings[name])}
+                  />
+                </label>
+              ))}
+              <button className="action-outline" disabled={busy || stopping}>
+                Save lower risk cap
+              </button>
+            </form>
+          </details>
         ) : (
           <p>Reading your existing risk configuration…</p>
         )}
@@ -348,13 +239,13 @@ export default function TradeControls({
           <div>
             <strong>
               {data?.settings
-                ? `${Math.min(0.5, data.settings.riskPerTradePct)}%`
-                : "0.5%"}
+                ? `${Math.min(0.25, data.settings.riskPerTradePct)}%`
+                : "0.25%"}
             </strong>
             <span>Maximum trade risk</span>
           </div>
           <div>
-            <strong>{Math.min(5, data?.settings.maxDailyLossPct ?? 5)}%</strong>
+            <strong>{Math.min(1, data?.settings.maxDailyLossPct ?? 1)}%</strong>
             <span>Daily loss limit</span>
           </div>
           <div>
@@ -362,19 +253,22 @@ export default function TradeControls({
             <span>Drawdown limit</span>
           </div>
           <div>
-            <strong>{Math.min(3, data?.settings.maxPositions ?? 3)}</strong>
+            <strong>{Math.min(1, data?.settings.maxPositions ?? 1)}</strong>
             <span>Maximum positions</span>
           </div>
         </div>
         <p className="settings-small">
-          3% aggregate open risk maximum. Required stop-loss, broker volume and
-          margin checks. No martingale or averaging down. Stricter saved limits
-          still apply. Changing strategy or risk pauses execution for review.
+          {data?.settings.maxAggregateRiskPct ?? 0.25}% maximum aggregate open
+          risk. Pause after 3 consecutive losses. Required stop-loss, broker
+          volume and margin checks. No martingale, grid trading or averaging
+          down. Stricter saved limits still apply. Changing strategy or risk
+          pauses execution for review.
         </p>
       </section>
-      <section className="inner-card" aria-labelledby="usage-title">
+      <details className="inner-card" aria-labelledby="usage-title">
+        <summary id="usage-title">OpenAI frequency & cost controls</summary>
         <div className="inner-card-title">
-          <span id="usage-title">AI FREQUENCY & COST CONTROL</span>
+          <span>OPENAI FREQUENCY & COST CONTROL</span>
           <span className="inner-tag">SERVER ENFORCED</span>
         </div>
         {engine.data ? (
@@ -457,7 +351,7 @@ export default function TradeControls({
             {engine.error}
           </p>
         ) : null}
-      </section>
+      </details>
       <section className="inner-card settings-emergency" id="emergency-stop">
         <div className="inner-card-title">
           <span>EMERGENCY STOP</span>
@@ -465,7 +359,7 @@ export default function TradeControls({
         </div>
         <p>
           Disable automated order submission independently of AI. Existing
-          positions remain open. Live approval is revoked.
+          positions remain open. The engine session is revoked.
         </p>
         <button
           className="action-red"
@@ -475,7 +369,7 @@ export default function TradeControls({
             setStopNotice("");
             try {
               await mt5Api("stop", {});
-              await refresh();
+              await Promise.all([refresh(), engine.refresh()]);
               setStopNotice(
                 "Emergency Stop confirmed. New automated orders are disabled; existing positions remain open.",
               );
@@ -535,67 +429,6 @@ export default function TradeControls({
         )}
       </details>
       {children}
-      <dialog
-        className="live-activation-dialog"
-        ref={demoDialog}
-        aria-labelledby="demo-execution-title"
-        onClose={() => {
-          setConfirmation("");
-          setReviewAccountKey("");
-        }}
-      >
-        <button
-          className="action-outline"
-          autoFocus
-          onClick={() => demoDialog.current?.close()}
-        >
-          Cancel
-        </button>
-        <h2 id="demo-execution-title">Authorize Demo broker execution</h2>
-        <p>
-          Account <strong>{account?.login}</strong> · {account?.server}
-          <br />
-          Automatically detected <strong>{account?.type.toUpperCase()}</strong>.
-        </p>
-        <p>
-          This permits genuine Demo broker orders from validated AI proposals
-          within your risk limits. START AI remains a separate analysis control.
-        </p>
-        <label className="trade-field">
-          Type {phrase}
-          <input
-            autoComplete="off"
-            value={confirmation}
-            onChange={(event) => setConfirmation(event.target.value)}
-          />
-        </label>
-        {issue ? (
-          <p className="inner-error" role="alert">
-            {issue}
-          </p>
-        ) : null}
-        <button
-          className="action-red"
-          disabled={
-            busy ||
-            stopping ||
-            blocked ||
-            account?.type !== "demo" ||
-            reviewAccountKey !== data?.accountKey ||
-            confirmation !== phrase
-          }
-          onClick={async () => {
-            const result = await action({
-              action: "start-auto",
-              accountKey: data?.accountKey,
-              confirmation,
-            });
-            if (result) demoDialog.current?.close();
-          }}
-        >
-          Confirm Demo execution for {account?.login}
-        </button>
-      </dialog>
     </div>
   );
 }

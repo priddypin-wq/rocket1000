@@ -1,9 +1,9 @@
 {
   "name": "ROCKET1000 EA",
-  "version": "5.00",
+  "version": "6.00",
   "errors": 0,
   "warnings": 0,
-  "builtAt": "2026-10-22T13:00:26.3482561Z",
-  "sourceSha256": "5fc310de91ea6c013dcd9aa6151d539984de478dc2c1150c906cb1f5f473157e",
-  "binarySha256": "f230388d381dbc401c62cc29ff5fb966be04f43a8ae095f95cfc3b929349bad7"
+  "builtAt": "2026-10-26T09:13:53.9367036Z",
+  "sourceSha256": "1b4da565639cfe9cff6ff96a645aec737093b662c2001eebdea462477ec28da4",
+  "binarySha256": "82c9187f5145e0fb4f3f7804952fa074d3f8ce40d3e25e2966f2eb5133e755ac"
 }

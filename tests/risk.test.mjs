@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { validateRisk } from "../lib/risk.mjs";
+import { validateTradeSettings } from "../server/trade-settings.mjs";
 const safe = {
   balance: 10000,
   equity: 10000,
@@ -29,11 +30,11 @@ const safe = {
   newsBlocked: false,
   side: "BUY",
 };
-test("sizes at at most half a percent and rounds down", () => {
+test("sizes at at most a quarter percent and rounds down", () => {
   const r = validateRisk(safe);
   assert.equal(r.approved, true);
-  assert.equal(r.volume, 0.05);
-  assert.equal(r.riskBudget, 50);
+  assert.equal(r.volume, 0.02);
+  assert.equal(r.riskBudget, 25);
 });
 for (const [label, patch] of Object.entries({
   demo: { mode: "demo" },
@@ -61,7 +62,29 @@ test("stricter configured risk wins and minimum volume never expands the budget"
   const tiny = validateRisk({ ...safe, balance: 100, equity: 100 });
   assert.equal(tiny.approved, false);
   assert.ok(tiny.reasons.includes("Minimum lot exceeds risk budget"));
-  const exact = validateRisk({ ...safe, existingRisk: 250 });
+  const exact = validateRisk({ ...safe, existingRisk: 5 });
   assert.equal(exact.approved, true);
-  assert.equal(exact.volume, 0.05);
+  assert.equal(exact.volume, 0.02);
+});
+
+test("lower configurable aggregate capacity constrains volume without raising hard ceilings", () => {
+  const lower = validateRisk({ ...safe, aggregateLimit: 0.0015 });
+  assert.equal(lower.approved, true);
+  assert.equal(lower.volume, 0.01);
+  assert.equal(
+    validateRisk({ ...safe, aggregateLimit: 0.0005 }).approved,
+    false,
+  );
+  assert.equal(
+    validateTradeSettings({ maxAggregateRiskPct: 0.1 }).maxAggregateRiskPct,
+    0.1,
+  );
+  for (const patch of [
+    { maxAggregateRiskPct: 0.251 },
+    { maxPositions: 2 },
+    { riskPerTradePct: 0.251 },
+    { maxDailyLossPct: 1.01 },
+    { maxDrawdownPct: 5.01 },
+  ])
+    assert.throws(() => validateTradeSettings(patch));
 });

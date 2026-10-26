@@ -6,8 +6,10 @@ import {
   terminal,
   approveFixtureLive,
   seedAiEntryFixture,
+  seedAnalysisEngineFixture,
 } from "./helpers.mjs";
 import { tradingService } from "../server/trading.mjs";
+import { engineService } from "../server/engine-service.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 
 // Isolated account/permission regression fixtures. These tests do not contact
@@ -31,6 +33,10 @@ const execution = {
   pendingOrders: 0,
   tradeAllowed: true,
   stopsVerified: true,
+  costsVerified: true,
+  commissionPerLot: 0,
+  consecutiveLosses: 0,
+  consecutiveLossesVerified: true,
   newsVerified: true,
   newsBlocked: false,
 };
@@ -50,6 +56,7 @@ async function setup(type = "demo") {
   const send = (patch = {}, register = false, options = {}) =>
     f.service.telemetry(f.token, input(patch), register, options);
   await send({}, true);
+  await seedAnalysisEngineFixture(f);
   await f.db.query(
     "INSERT INTO rocket_engine_validation(user_id,engine_version,completed_at,evidence) VALUES(?,?,?,?)",
     [
@@ -60,12 +67,25 @@ async function setup(type = "demo") {
     ],
   );
   const state = () => trade.status("alice");
-  const start = async () =>
-    trade.act("alice", {
-      action: "start-auto",
-      confirmation: "ENABLE DEMO 12345678",
-      accountKey: (await state()).accountKey,
-    });
+  const engine = engineService(f.db, {
+    now: f.now,
+    credentials: {
+      status: async () => ({
+        configured: true,
+        revision: "fixture-only",
+        connection: { connected: true },
+      }),
+      test: async () => ({ connected: true }),
+      environment: async () => ({
+        OPENAI_API_KEY: "fixture-not-an-api-key",
+        OPENAI_MODEL: "gpt-6.1-sol",
+      }),
+    },
+  });
+  const start = async () => {
+    await engine.heartbeat();
+    return engine.start("alice");
+  };
   const queue = async () => {
     await seedAiEntryFixture(f);
     const preview = await trade.act("alice", {
@@ -117,7 +137,7 @@ for (const type of ["demo", "live"]) {
         assert.equal(current.permissionActive, true);
         assert.equal(current.automation.state, "running");
         assert.equal(current.account.type, type);
-        assert.equal(current.liveConfirmed, type === "live");
+        assert.equal(current.liveConfirmed, false);
         assert.equal(current.settingsRevision, initial.settingsRevision);
         assert.equal(current.liveConfirmedAt, initial.liveConfirmedAt);
       }
@@ -132,7 +152,7 @@ for (const type of ["demo", "live"]) {
     }
   });
 
-  test(`${type}: AI OFF pauses queued orders, retains Live consent and requires a separate Start`, async () => {
+  test(`${type}: AI OFF pauses queued orders, preserves account metadata and requires a separate Start`, async () => {
     const f = await setup(type);
     try {
       if (type === "live") await approveFixtureLive(f.trade);
@@ -148,7 +168,7 @@ for (const type of ["demo", "live"]) {
       assert.equal(current.automation.state, "stopped");
       assert.equal(current.orders[0].status, "cancelled");
       assert.equal(current.liveConfirmedAt, before.liveConfirmedAt);
-      assert.equal(current.liveConfirmed, type === "live");
+      assert.equal(current.liveConfirmed, false);
       assert.equal(
         current.activationEvents[0].event,
         "automatic_trading_paused",
@@ -232,7 +252,9 @@ test("EA account switching synchronizes verified identity and financials and lea
       f.trade.act("alice", { action: "start-auto", accountKey: oldAccountKey }),
       /account changed/,
     );
-    await assert.rejects(f.start(), /explicit confirmation/);
+    await f.start();
+    assert.equal((await f.state()).permissionActive, true);
+    assert.notEqual((await f.state()).accountKey, oldAccountKey);
     const [old] = await f.db.query(
       "SELECT status FROM rocket_trade_commands WHERE connection_id=?",
       [f.id],

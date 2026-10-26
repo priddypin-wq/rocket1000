@@ -35,6 +35,9 @@ async function fixture(filename = ":memory:") {
     );
   let clock = 1800000000000;
   const service = provisioningService(db, {
+    env: {
+      ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    },
     now: () => clock,
     origin: () => "https://integration.example.test",
   });
@@ -59,6 +62,72 @@ function config(zip) {
   );
   return { entries, ...c };
 }
+
+test("authenticated legacy EA securely backfills its own download credential without rotation", async () => {
+  const { db, service } = await fixture();
+  try {
+    const { id } = await service.create("alice"),
+      first = config(await service.download("alice", id));
+    await db.query(
+      "DELETE FROM rocket_ea_download_credentials WHERE installation_id=?",
+      [first.installation_id],
+    );
+    await assert.rejects(
+      service.download("alice", id),
+      (e) => e.code === "EA_ROTATION_REVIEW_REQUIRED",
+    );
+    assert.equal((await service.list("alice"))[0].installation.revokedAt, null);
+    const invalid =
+      first.credential.slice(0, -1) +
+      (first.credential.endsWith("a") ? "b" : "a");
+    await assert.rejects(
+      service.telemetry(invalid, telemetry, true),
+      (e) => e.status === 401,
+    );
+    assert.equal(
+      (await db.query("SELECT * FROM rocket_ea_download_credentials")).length,
+      0,
+    );
+    await service.telemetry(first.credential, telemetry, true);
+    const [vault] = await db.query(
+      "SELECT sealed FROM rocket_ea_download_credentials WHERE installation_id=?",
+      [first.installation_id],
+    );
+    assert.ok(vault && !vault.sealed.includes(first.credential));
+    const again = config(await service.download("alice", id));
+    assert.equal(again.credential, first.credential);
+    assert.equal(again.installation_id, first.installation_id);
+    assert.equal((await service.list("alice"))[0].status, "Connected");
+  } finally {
+    await db.close();
+  }
+});
+
+test("only an explicit reviewed replacement rotates a valid installation", async () => {
+  const { db, service } = await fixture();
+  try {
+    const { id } = await service.create("alice"),
+      first = config(await service.download("alice", id));
+    const ordinary = config(await service.download("alice", id));
+    assert.equal(ordinary.credential, first.credential);
+    const replaced = config(
+      await service.download("alice", id, { replaceCredential: true }),
+    );
+    assert.notEqual(replaced.credential, first.credential);
+    await assert.rejects(
+      service.telemetry(first.credential, telemetry, true),
+      (e) => e.status === 401,
+    );
+    await service.telemetry(replaced.credential, telemetry, true);
+    assert.equal((await service.list("alice"))[0].status, "Connected");
+    await assert.rejects(
+      service.download("bob", id, { replaceCredential: true }),
+      (e) => e.status === 404,
+    );
+  } finally {
+    await db.close();
+  }
+});
 test("canonical origin fails closed and never uses request host", () => {
   for (const value of [
     undefined,
@@ -135,11 +204,12 @@ test("one-file MetaEditor download embeds a scoped credential without a config d
     const nextToken = replacement.match(
       /const string token="([A-Za-z0-9_.-]+)";/,
     )?.[1];
-    assert.notEqual(nextToken, token);
-    await assert.rejects(
-      () => service.telemetry(token, telemetry, true),
-      (e) => e.status === 401,
+    assert.equal(
+      nextToken,
+      token,
+      "re-downloading must not break the installed EA",
     );
+    assert.equal((await service.telemetry(token, telemetry, false)).ok, true);
     assert.equal(
       (await service.telemetry(nextToken, telemetry, true)).ok,
       true,
@@ -246,12 +316,14 @@ test("personalized ZIP, ownership, registration, heartbeat expiry, restart, mism
     assert.equal((await service.list("alice"))[0].status, "Connected");
     advance(1);
     const second = config(await service.download("alice", id));
-    assert.notEqual(first.credential, second.credential);
-    await assert.rejects(
-      () => service.telemetry(first.credential, telemetry, true),
-      (e) => e.status === 401,
+    assert.equal(first.credential, second.credential);
+    assert.equal(first.installation_id, second.installation_id);
+    assert.equal(first.expires_at, second.expires_at);
+    assert.equal(
+      (await service.telemetry(first.credential, telemetry, false)).ok,
+      true,
     );
-    assert.equal((await service.list("alice"))[0].status, "Connecting");
+    assert.equal((await service.list("alice"))[0].status, "Connected");
     await service.telemetry(second.credential, telemetry, true);
     await assert.rejects(
       () => service.revoke("bob", id),
@@ -342,7 +414,7 @@ test("database survives process/store restart and keeps emergency stop", async (
     await rm(folder, { recursive: true, force: true });
   }
 });
-test("concurrent replacement downloads leave exactly one usable installation", async () => {
+test("concurrent downloads share one usable installation instead of invalidating one another", async () => {
   const { db, service } = await fixture();
   try {
     const { id } = await service.create("alice", account);
@@ -354,7 +426,12 @@ test("concurrent replacement downloads leave exactly one usable installation", a
     const results = await Promise.allSettled(
       tokens.map((t) => service.telemetry(t, telemetry, true)),
     );
-    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    assert.equal(tokens[0], tokens[1]);
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 2);
+    const [{ n }] = await db.query(
+      "SELECT COUNT(*) AS n FROM rocket_direct_installations WHERE revoked_at IS NULL",
+    );
+    assert.equal(Number(n), 1);
   } finally {
     await db.close();
   }

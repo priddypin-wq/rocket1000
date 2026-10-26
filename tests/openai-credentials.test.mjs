@@ -21,6 +21,7 @@ async function fixture(options = {}) {
       [uid, NOW, NOW + 1000000],
     );
   const env = {
+    ROCKET_OPENAI_SERVER_MANAGED: "0",
     ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
     OPENAI_MODEL: "gpt-6.1-sol",
     ...options.env,
@@ -236,7 +237,10 @@ test("key validation, missing encryption and expired workspace fail without leak
     await assert.rejects(f.service.save("alice", { key: KEY }), {
       code: "BROWSER_SESSION_REQUIRED",
     });
-    const noSecret = openaiCredentialService(f.db, { now: () => NOW, env: {} });
+    const noSecret = openaiCredentialService(f.db, {
+      now: () => NOW,
+      env: { ROCKET_OPENAI_SERVER_MANAGED: "0" },
+    });
     await assert.rejects(noSecret.save("bob", { key: KEY }), {
       code: "OPENAI_ENCRYPTION_UNAVAILABLE",
     });

@@ -1,7 +1,7 @@
 // ROCKET1000 EA: real MT5 broker execution with account-bound server authorization.
 #property copyright "ROCKET1000"
-#property version   "5.00"
-#property description "ROCKET1000 EA - real Demo/Live execution. Live accounts require dashboard confirmation."
+#property version   "6.00"
+#property description "ROCKET1000 EA - real Demo/Live market data and account-authorized broker execution."
 #property strict
 
 string backend_url="", credential="", installation_id="";
@@ -24,6 +24,16 @@ ulong performance_notice=0;
 bool order_permission=false;
 double risk_day_start=0,risk_daily_loss=0,risk_peak=0,risk_existing=0;
 bool risk_stops=false,news_verified=false,news_blocked=true,daily_history_verified=false;
+double commission_per_lot=0;
+bool costs_verified=false,loss_history_verified=false;
+int consecutive_losses=0;
+string risk_account="",cost_account="";
+ulong costs_until=0;
+string quote_symbols[100];long quote_millis[100];ulong quote_observed[100];int quote_count=0;
+string active_id="",active_lease="",active_kind="",active_symbol="",active_identifier="";
+ulong active_order=0,active_position=0;
+double active_volume=0,active_filled=0,active_value=0,active_stop=0,active_tp=0;
+ulong active_deals[128];int active_deal_count=0;
 
 string Trim(string value) { StringTrimLeft(value); StringTrimRight(value); return value; }
 bool SafeCredential(string value) {
@@ -48,25 +58,58 @@ void ShowStatus(string value) {
    if(value!=current_status) Print("ROCKET1000 EA: ",value);
    current_status=value;
    string account_label=AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO?"Demo":(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_REAL?"Live":"Unknown");
-   Comment("ROCKET1000 EA 5.00\n",value,"\nAccount type: ",account_label,"\nBroker execution: ",(order_permission?"PERMISSION ACTIVE":"STOPPED"),"\n",backend_url);
+   Comment("ROCKET1000 EA 6.00\n",value,"\nAccount type: ",account_label,"\nBroker execution: ",(order_permission?"PERMISSION ACTIVE":"STOPPED"),"\n",backend_url);
 }
 // ROCKET1000_CONFIG_BEGIN
+bool ConfigFailure(string reason,int error=0){
+   static ulong next_notice=0;
+   if(GetTickCount64()>=next_notice){
+      Print("ROCKET1000 EA: configuration unavailable - ",reason,". Expected MQL5/Files/ROCKET1000/rocket1000.config. MT5 file error=",error,". Extract the personalized package into this terminal's data folder. Trading remains stopped.");
+      next_notice=GetTickCount64()+30000;
+   }
+   return false;
+}
+bool ConfigIdValid(string value){
+   if(StringLen(value)!=36)return false;
+   for(int i=0;i<36;i++){
+      ushort ch=StringGetCharacter(value,i);
+      if(i==8 || i==13 || i==18 || i==23){if(ch!='-')return false;}
+      else if(!((ch>='0' && ch<='9') || (ch>='a' && ch<='f')))return false;
+   }
+   return true;
+}
 bool LoadConfig() {
+   ResetLastError();
    int file=FileOpen("ROCKET1000\\rocket1000.config",FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
-   if(file==INVALID_HANDLE) return false;
-   string url="",token="",id="",version="";
+   if(file==INVALID_HANDLE)return ConfigFailure("file is missing or cannot be read",GetLastError());
+   if(FileSize(file)>4096){FileClose(file);return ConfigFailure("file exceeds the configuration size limit");}
+   string url="",token="",id="",version="",expires="";
+   bool duplicate=false;
    int lines=0;
    while(!FileIsEnding(file) && lines++<20) {
       string line=Trim(FileReadString(file));
+      // CP_UTF8 decodes an optional BOM as U+FEFF; never let it hide the first key.
+      if(StringLen(line)>0 && StringGetCharacter(line,0)==0xFEFF)line=Trim(StringSubstr(line,1));
+      StringReplace(line,"\r","");StringReplace(line,"\n","");
       int equals=StringFind(line,"="); if(equals<0) continue;
-      string key=StringSubstr(line,0,equals),value=Trim(StringSubstr(line,equals+1));
-      if(key=="backend_url") url=value;
-      if(key=="credential") token=value;
-      if(key=="installation_id") id=value;
-      if(key=="version") version=value;
+      string key=Trim(StringSubstr(line,0,equals)),value=Trim(StringSubstr(line,equals+1));
+      if(key=="backend_url"){if(url!="")duplicate=true;url=value;}
+      if(key=="credential"){if(token!="")duplicate=true;token=value;}
+      if(key=="installation_id"){if(id!="")duplicate=true;id=value;}
+      if(key=="version"){if(version!="")duplicate=true;version=value;}
+      if(key=="expires_at"){if(expires!="")duplicate=true;expires=value;}
    }
+   bool too_long=!FileIsEnding(file);
    FileClose(file);
-   if(version!="1" || !SafeOrigin(url) || !SafeCredential(token) || StringLen(id)!=36 || StringFind(token,"r1000."+id+".")!=0) return false;
+   if(too_long || duplicate || version!="1" || !SafeOrigin(url) || !SafeCredential(token) || !ConfigIdValid(id) || StringFind(token,"r1000."+id+".")!=0 || StringLen(token)!=86)return ConfigFailure("format or installation identity is invalid");
+   for(int i=43;i<86;i++){
+      ushort ch=StringGetCharacter(token,i);
+      if(!((ch>='a' && ch<='z') || (ch>='A' && ch<='Z') || (ch>='0' && ch<='9') || ch=='-' || ch=='_'))return ConfigFailure("credential format is invalid");
+   }
+   if(StringLen(expires)!=10)return ConfigFailure("expiration timestamp is missing or invalid");
+   for(int i=0;i<10;i++){ushort ch=StringGetCharacter(expires,i);if(ch<'0' || ch>'9')return ConfigFailure("expiration timestamp is invalid");}
+   long expiry=StringToInteger(expires);datetime utc=clock_anchor>0?(datetime)(ServerNow()/1000):TimeGMT();
+   if(expiry<1577836800 || expiry>4102444800 || utc<=0 || expiry<=(long)utc)return ConfigFailure("credential expired; download the current authorized installation");
    if(token!=credential || url!=backend_url) registered=false;
    backend_url=url;credential=token;installation_id=id;
    return true;
@@ -78,9 +121,28 @@ string EscapeJson(string value) {
    return value;
 }
 datetime BrokerNow() {
-   datetime received=TimeCurrent();ulong tick=GetTickCount64();
-   if(broker_anchor==0 || received>broker_anchor){broker_anchor=received;broker_clock=tick;}
+   // Quote timestamps and session/calendar timestamps are broker time, never GMT.
+   datetime estimated=TimeTradeServer();ulong tick=GetTickCount64();
+   if(estimated>0 && TerminalInfoInteger(TERMINAL_CONNECTED)){broker_anchor=estimated;broker_clock=tick;return estimated;}
+   if(broker_anchor<=0 || tick-broker_clock>90000)return 0;
    return broker_anchor+(datetime)((tick-broker_clock)/1000);
+}
+bool FreshQuote(string symbol,MqlTick &quote,int max_age){
+   if(!SymbolInfoTick(symbol,quote) || quote.bid<=0 || quote.ask<quote.bid || quote.time_msc<=0)return false;
+   datetime server=BrokerNow();if(server<=0)return false;
+   long age=(long)server*1000-quote.time_msc;
+   if(age < -2000 || age>(long)max_age*1000)return false;
+   int index=-1;
+   for(int i=0;i<quote_count;i++)if(quote_symbols[i]==symbol){index=i;break;}
+   if(index<0){if(quote_count>=100)return false;index=quote_count++;quote_symbols[index]=symbol;quote_millis[index]=0;quote_observed[index]=0;}
+   ulong monotonic=GetTickCount64();
+   if(quote_millis[index]!=quote.time_msc){
+      // An unchanged quote may not be made fresh by HTTP retries or clock changes.
+      if(quote_millis[index]>quote.time_msc)return false;
+      quote_millis[index]=quote.time_msc;
+      quote_observed[index]=monotonic-(ulong)MathMin(MathMax(0,age),(long)monotonic);
+   }
+   return monotonic-quote_observed[index]<=(ulong)max_age*1000;
 }
 string MarketUnavailable(string reason){
    if(GetTickCount64()>=market_notice){Print("ROCKET1000 EA: waiting for market data - ",reason);market_notice=GetTickCount64()+60000;}
@@ -96,9 +158,9 @@ string TimeframeUnavailable(string label,int notice_index,string reason){
 string ClosedBars(ENUM_TIMEFRAMES period,string label,int notice_index,int minimum,datetime broker_now,int &count){
    MqlRates bars[];ArraySetAsSeries(bars,false);ResetLastError();
    // Position 1 excludes the current, unfinished candle. Never synthesize another timeframe.
-   count=CopyRates(_Symbol,period,1,100,bars);
+   count=CopyRates(_Symbol,period,1,220,bars);
    int seconds=PeriodSeconds(period);
-   if(count<minimum || count>100 || seconds<=0)return TimeframeUnavailable(label,notice_index,"CopyRates count="+IntegerToString(count)+", error="+IntegerToString(GetLastError()));
+   if(count<minimum || count>220 || seconds<=0)return TimeframeUnavailable(label,notice_index,"CopyRates count="+IntegerToString(count)+", error="+IntegerToString(GetLastError()));
    if(bars[count-1].time+seconds>broker_now+2 || broker_now-(bars[count-1].time+seconds)>2*seconds)return TimeframeUnavailable(label,notice_index,"latest closed candle is stale or incomplete");
    string candles="[";
    for(int i=0;i<count;i++){
@@ -112,26 +174,26 @@ string MarketSnapshot() {
    if(clock_anchor<=0)return "";
    MqlTick quote;
    datetime broker_now=BrokerNow();
-   if(!SymbolInfoTick(_Symbol,quote) || quote.bid<=0 || quote.ask<=0 || broker_now<=0 || quote.time>broker_now+2 || broker_now-quote.time>15) return MarketUnavailable("stale chart quote; broker time="+IntegerToString(broker_now)+", quote time="+IntegerToString(quote.time));
+   if(!FreshQuote(_Symbol,quote,15)) return MarketUnavailable("stale chart quote; broker time="+IntegerToString(broker_now)+", quote time="+IntegerToString(quote.time));
    int count=0;
    string candles=ClosedBars(PERIOD_M5,"M5",1,50,broker_now,count);
    if(candles=="")return "";
-   // Root M5 remains compatible with the connection bridge. AI frames require the complete 100-bar history.
+   // Root M5 preserves the connection bridge; completed 220-bar frames support EMA200.
    string timeframes="{";int frames=0;
-   if(count==100){timeframes+="\"M5\":{\"bars\":"+candles+"}";frames++;}
-   else TimeframeUnavailable("M5",1,"100 closed candles required; count="+IntegerToString(count));
-   string m1=ClosedBars(PERIOD_M1,"M1",0,100,broker_now,count);
+   if(count==220){timeframes+="\"M5\":{\"bars\":"+candles+"}";frames++;}
+   else TimeframeUnavailable("M5",1,"220 closed candles required; count="+IntegerToString(count));
+   string m1=ClosedBars(PERIOD_M1,"M1",0,220,broker_now,count);
    if(m1!=""){if(frames++>0)timeframes+=",";timeframes+="\"M1\":{\"bars\":"+m1+"}";}
-   string m15=ClosedBars(PERIOD_M15,"M15",2,100,broker_now,count);
+   string m15=ClosedBars(PERIOD_M15,"M15",2,220,broker_now,count);
    if(m15!=""){if(frames++>0)timeframes+=",";timeframes+="\"M15\":{\"bars\":"+m15+"}";}
-   string h1=ClosedBars(PERIOD_H1,"H1",3,100,broker_now,count);
+   string h1=ClosedBars(PERIOD_H1,"H1",3,220,broker_now,count);
    if(h1!=""){if(frames++>0)timeframes+=",";timeframes+="\"H1\":{\"bars\":"+h1+"}";}
    timeframes+="}";
    if(!positions_available)return MarketUnavailable("broker position enumeration is incomplete");
-   string clocks="\"brokerTimestamp\":"+IntegerToString((long)broker_now*1000)+",\"quoteTimestamp\":"+IntegerToString((long)quote.time*1000)+",";
+   string clocks="\"brokerTimestamp\":"+IntegerToString((long)broker_now*1000)+",\"quoteTimestamp\":"+IntegerToString(quote.time_msc)+",";
    string snapshot="{"+clocks+"\"symbol\":\""+EscapeJson(_Symbol)+"\",\"timeframe\":\"M5\",\"timestamp\":"+IntegerToString((long)ServerNow())+",\"bid\":"+DoubleToString(quote.bid,8)+",\"ask\":"+DoubleToString(quote.ask,8)+",\"balance\":"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+",\"equity\":"+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+",\"currency\":\""+EscapeJson(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"bars\":"+candles+",\"timeframes\":"+timeframes+",\"positions\":"+positions_snapshot+"}";
    char encoded[];
-   if(StringToCharArray(snapshot,encoded,0,WHOLE_ARRAY,CP_UTF8)-1>180000)return MarketUnavailable("market payload exceeds the bounded connection budget");
+   if(StringToCharArray(snapshot,encoded,0,WHOLE_ARRAY,CP_UTF8)-1>360000)return MarketUnavailable("market payload exceeds the bounded connection budget");
    return snapshot;
 }
 double ServerNow(){return clock_anchor+(double)(GetTickCount64()-clock_tick);}
@@ -206,7 +268,72 @@ bool CheckCurrencyNews(string currency) {
    }
    return true;
 }
+bool IsOpenIdentifier(ulong identifier){
+   int total=PositionsTotal();if(total>100)return true;
+   for(int i=0;i<total;i++){if(PositionGetTicket(i)==0)return true;if((ulong)PositionGetInteger(POSITION_IDENTIFIER)==identifier)return true;}
+   return PositionsTotal()!=total;
+}
+void RefreshObservedHistory(){
+   string account=AccountStamp()+"|"+_Symbol;ulong monotonic=GetTickCount64();
+   if(cost_account==account && monotonic<costs_until)return;
+   cost_account=account;costs_until=monotonic+60000;commission_per_lot=0;costs_verified=false;loss_history_verified=false;consecutive_losses=0;
+   // Use actual complete account history, including manual trades, for the account loss streak.
+   // Empty history verifies a zero streak, but cannot verify a symbol's commission schedule.
+   if(!HistorySelect(0,BrokerNow()))return;
+   int total=HistoryDealsTotal();if(total>10000)return;
+   ulong identifiers[];if(ArrayResize(identifiers,total)!=total)return;
+   for(int i=0;i<total;i++){
+      ulong deal=HistoryDealGetTicket(i);if(deal==0)return;
+      identifiers[i]=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+   }
+   if(total>0 && !ArraySort(identifiers))return;
+   double incoming[],outgoing[],net[],fees[];long closed_at[];bool focus[],reversal[],entered[];
+   if(ArrayResize(incoming,total)!=total || ArrayResize(outgoing,total)!=total || ArrayResize(net,total)!=total || ArrayResize(fees,total)!=total || ArrayResize(closed_at,total)!=total || ArrayResize(focus,total)!=total || ArrayResize(reversal,total)!=total || ArrayResize(entered,total)!=total)return;
+   ArrayInitialize(incoming,0);ArrayInitialize(outgoing,0);ArrayInitialize(net,0);ArrayInitialize(fees,0);ArrayInitialize(closed_at,0);ArrayInitialize(focus,false);ArrayInitialize(reversal,false);ArrayInitialize(entered,false);
+   bool unallocated_fee=false;
+   for(int i=0;i<total;i++){
+      ulong deal=HistoryDealGetTicket(i);if(deal==0)return;
+      long type=HistoryDealGetInteger(deal,DEAL_TYPE),entry=HistoryDealGetInteger(deal,DEAL_ENTRY);
+      double profit=0,commission=0,swap=0,fee=0,volume=0;
+      if(!HistoryDealGetDouble(deal,DEAL_PROFIT,profit) || !HistoryDealGetDouble(deal,DEAL_COMMISSION,commission) || !HistoryDealGetDouble(deal,DEAL_SWAP,swap) || !HistoryDealGetDouble(deal,DEAL_FEE,fee) || !HistoryDealGetDouble(deal,DEAL_VOLUME,volume) || !MathIsValidNumber(profit) || !MathIsValidNumber(commission) || !MathIsValidNumber(swap) || !MathIsValidNumber(fee) || !MathIsValidNumber(volume))return;
+      ulong identifier=(ulong)HistoryDealGetInteger(deal,DEAL_POSITION_ID);
+      if(identifier==0){
+         if(commission<0 || fee<0 || (type!=DEAL_TYPE_BALANCE && type!=DEAL_TYPE_CREDIT && type!=DEAL_TYPE_BONUS && type!=DEAL_TYPE_CORRECTION && profit<0))unallocated_fee=true;
+         continue;
+      }
+      int group=ArrayBsearch(identifiers,identifier);if(group<0 || identifiers[group]!=identifier)return;
+      net[group]+=profit+commission+swap+fee;
+      fees[group]+=MathMax(0,-commission)+MathMax(0,-fee);
+      if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL){if(profit<0)fees[group]+=-profit;continue;}
+      if(volume<=0)return;
+      if(HistoryDealGetString(deal,DEAL_SYMBOL)==_Symbol)focus[group]=true;
+      if(entry==DEAL_ENTRY_IN){incoming[group]+=volume;entered[group]=true;}
+      else if(entry==DEAL_ENTRY_INOUT){reversal[group]=true;closed_at[group]=MathMax(closed_at[group],HistoryDealGetInteger(deal,DEAL_TIME_MSC));}
+      else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY){outgoing[group]+=volume;closed_at[group]=MathMax(closed_at[group],HistoryDealGetInteger(deal,DEAL_TIME_MSC));}
+      else return;
+   }
+   long latest[3];double outcomes[3];ulong latest_id[3];ArrayInitialize(latest,0);ArrayInitialize(outcomes,0);ArrayInitialize(latest_id,0);
+   for(int i=0;i<total;i++){
+      if(closed_at[i]<=0 || IsOpenIdentifier(identifiers[i]))continue;
+      if(!entered[i])return; // A truncated broker lineage is not a verified closed trade.
+      if(focus[i] && !reversal[i] && incoming[i]>0 && MathAbs(incoming[i]-outgoing[i])<=0.00000001){
+         double observed=fees[i]/incoming[i];if(!MathIsValidNumber(observed) || observed<0)return;
+         commission_per_lot=MathMax(commission_per_lot,observed);costs_verified=true;
+      }
+      if(MathAbs(net[i])<0.00000001)continue; // Breakeven does not erase prior losses.
+      for(int n=0;n<3;n++)if(closed_at[i]>latest[n] || (closed_at[i]==latest[n] && identifiers[i]>latest_id[n])){
+         for(int k=2;k>n;k--){latest[k]=latest[k-1];outcomes[k]=outcomes[k-1];latest_id[k]=latest_id[k-1];}
+         latest[n]=closed_at[i];outcomes[n]=net[i];latest_id[n]=identifiers[i];break;
+      }
+   }
+   for(int i=0;i<3;i++){if(latest[i]<=0 || outcomes[i]>=0)break;consecutive_losses++;}
+   loss_history_verified=true;if(unallocated_fee)costs_verified=false;
+   string prefix="R1000.losses."+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"."+IntegerToString(NameHash(AccountInfoString(ACCOUNT_SERVER)));
+   if(GlobalVariableSet(prefix,(double)consecutive_losses)==0){loss_history_verified=false;costs_verified=false;return;}
+   GlobalVariablesFlush();
+}
 void RefreshRisk() {
+   RefreshObservedHistory();
    news_blocked=false;news_verified=true;int currencies=0;
    string base=SymbolInfoString(_Symbol,SYMBOL_CURRENCY_BASE),profit=SymbolInfoString(_Symbol,SYMBOL_CURRENCY_PROFIT);
    if(IsCalendarCurrency(base)){currencies++;if(!CheckCurrencyNews(base))news_verified=false;}
@@ -217,11 +344,15 @@ void RefreshRisk() {
    if(history_ok)for(int i=0;i<HistoryDealsTotal();i++) {
       ulong ticket=HistoryDealGetTicket(i);if(ticket==0){history_ok=false;break;}
       long type=HistoryDealGetInteger(ticket,DEAL_TYPE);
-      if(type==DEAL_TYPE_BUY || type==DEAL_TYPE_SELL)net+=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_FEE);
+      if(type!=DEAL_TYPE_BALANCE && type!=DEAL_TYPE_CREDIT && type!=DEAL_TYPE_BONUS && type!=DEAL_TYPE_CORRECTION)net+=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_FEE);
    }
    double balance=AccountInfoDouble(ACCOUNT_BALANCE),equity=AccountInfoDouble(ACCOUNT_EQUITY);
    daily_history_verified=history_ok;
-   realized_today=net;risk_day_start=balance-net;risk_daily_loss=MathMax(0,-net)+MathMax(0,balance-equity);
+   string day_name="R1000.day."+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"."+IntegerToString(NameHash(AccountInfoString(ACCOUNT_SERVER)))+"."+IntegerToString(StructToTime(day));
+   if(!GlobalVariableCheck(day_name) && history_ok && balance-net>0)GlobalVariableSet(day_name,balance-net);
+   realized_today=net;risk_day_start=GlobalVariableCheck(day_name)?GlobalVariableGet(day_name):0;
+   // Persist the broker-day baseline; include current floating losses and never offset them with earlier wins.
+   risk_daily_loss=MathMax(MathMax(0,risk_day_start-equity),MathMax(0,-net)+MathMax(0,balance-equity));
    string peak_name="R1000.peak."+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"."+IntegerToString(NameHash(AccountInfoString(ACCOUNT_SERVER)));
    risk_peak=GlobalVariableCheck(peak_name)?GlobalVariableGet(peak_name):MathMax(balance,equity);
    if(equity>risk_peak)risk_peak=equity;
@@ -232,8 +363,8 @@ void RefreshRisk() {
       string symbol=PositionGetString(POSITION_SYMBOL);double stop=PositionGetDouble(POSITION_SL),loss=0;
       ENUM_ORDER_TYPE side=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
       MqlTick quote;
-      if(stop<=0 || !SymbolInfoTick(symbol,quote) || !OrderCalcProfit(side,symbol,PositionGetDouble(POSITION_VOLUME),side==ORDER_TYPE_BUY?quote.bid:quote.ask,stop,loss)){risk_stops=false;continue;}
-      risk_existing+=MathMax(0,-loss);
+      if(stop<=0 || !FreshQuote(symbol,quote,3) || !OrderCalcProfit(side,symbol,PositionGetDouble(POSITION_VOLUME),side==ORDER_TYPE_BUY?quote.bid:quote.ask,stop,loss)){risk_stops=false;continue;}
+      risk_existing+=MathMax(0,-loss)+(symbol==_Symbol && costs_verified?commission_per_lot*PositionGetDouble(POSITION_VOLUME):0);
    }
    if(!history_ok || risk_day_start<=0){risk_stops=false;risk_day_start=MathMax(0.01,balance);risk_daily_loss=risk_day_start;}
 }
@@ -264,7 +395,7 @@ bool SymbolExecutionAllowed(string symbol,bool opening){
 }
 string SymbolExecutionSnapshot(string symbol){
    MqlTick quote;double point=SymbolInfoDouble(symbol,SYMBOL_POINT),tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-   if(clock_anchor<=0 || !SymbolInfoTick(symbol,quote) || quote.bid<=0 || quote.ask<quote.bid || point<=0 || tick<=0)return "";
+   if(clock_anchor<=0 || !FreshQuote(symbol,quote,15) || point<=0 || tick<=0)return "";
    return "{\"timestamp\":"+IntegerToString((long)ServerNow())+",\"brokerTimestamp\":"+IntegerToString((long)BrokerNow()*1000)+",\"quoteTimestamp\":"+IntegerToString((long)quote.time*1000)+",\"bid\":"+DoubleToString(quote.bid,10)+",\"ask\":"+DoubleToString(quote.ask,10)+",\"point\":"+DoubleToString(point,10)+",\"tickSize\":"+DoubleToString(tick,10)+",\"volumeStep\":"+DoubleToString(SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP),8)+",\"minVolume\":"+DoubleToString(SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN),8)+",\"maxVolume\":"+DoubleToString(SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX),8)+",\"stopLevel\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL))+",\"freezeLevel\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL))+",\"tradeAllowed\":"+(TradeAllowed()?"true":"false")+",\"sessionOpen\":"+(TradingSessionOpen(symbol)?"true":"false")+",\"symbolTradeMode\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_TRADE_MODE))+",\"tradeExecutionMode\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_TRADE_EXEMODE))+",\"orderMode\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_ORDER_MODE))+",\"fillingMode\":"+IntegerToString(SymbolInfoInteger(symbol,SYMBOL_FILLING_MODE))+"}";
 }
 string PositionsSnapshot(bool &available){
@@ -378,14 +509,15 @@ string ExecutionSnapshot() {
    RefreshRisk();
    double tick_value=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE_LOSS),SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE_PROFIT));
    string account="{\"balance\":"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+",\"equity\":"+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+",\"currency\":\""+EscapeJson(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"brokerName\":\""+EscapeJson(AccountInfoString(ACCOUNT_COMPANY))+"\",\"dailyProfitLoss\":"+(daily_history_verified?DoubleToString(realized_today+AccountInfoDouble(ACCOUNT_PROFIT),2):"null")+"}";
-   return "{\"engineVersion\":\"rocket-ai-5\",\"accountMarginMode\":"+IntegerToString(AccountInfoInteger(ACCOUNT_MARGIN_MODE))+",\"account\":"+account+",\"positionsAvailable\":"+(positions_available?"true":"false")+",\"positions\":"+positions_snapshot+",\"brokerPendingAvailable\":"+(broker_pending_available?"true":"false")+",\"brokerPending\":"+broker_pending_snapshot+",\"tradeHistory\":"+BrokerHistorySnapshot()+",\"sessionOpen\":"+(TradingSessionOpen(_Symbol)?"true":"false")+",\"symbolTradeMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_MODE))+",\"tradeExecutionMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_EXEMODE))+",\"orderMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE))+",\"fillingMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE))+",\"performance\":"+PerformanceSnapshot()+",\"tickSize\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),10)+",\"tickValue\":"+DoubleToString(tick_value,8)+",\"point\":"+DoubleToString(_Point,10)+",\"volumeStep\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),8)+",\"minVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN),8)+",\"maxVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),8)+",\"stopLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL))+",\"dayStartEquity\":"+DoubleToString(risk_day_start,2)+",\"dailyLoss\":"+DoubleToString(risk_daily_loss,2)+",\"peakEquity\":"+DoubleToString(risk_peak,2)+",\"existingRisk\":"+DoubleToString(risk_existing,2)+",\"pendingOrders\":"+IntegerToString(OrdersTotal())+",\"freeMargin\":"+DoubleToString(MathMax(0,AccountInfoDouble(ACCOUNT_MARGIN_FREE)),2)+",\"tradeAllowed\":"+(TradeAllowed()?"true":"false")+",\"stopsVerified\":"+(risk_stops?"true":"false")+",\"newsVerified\":"+(news_verified?"true":"false")+",\"newsBlocked\":"+(news_blocked?"true":"false")+"}";
+   account=StringSubstr(account,0,StringLen(account)-1)+",\"margin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),2)+",\"freeMargin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2)+",\"marginLevel\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),2)+",\"floatingProfit\":"+DoubleToString(AccountInfoDouble(ACCOUNT_PROFIT),2)+",\"positionsCount\":"+IntegerToString(PositionsTotal())+",\"ordersCount\":"+IntegerToString(OrdersTotal())+"}";
+   return "{\"engineVersion\":\"rocket-ai-6\",\"accountMarginMode\":"+IntegerToString(AccountInfoInteger(ACCOUNT_MARGIN_MODE))+",\"account\":"+account+",\"positionsAvailable\":"+(positions_available?"true":"false")+",\"positions\":"+positions_snapshot+",\"brokerPendingAvailable\":"+(broker_pending_available?"true":"false")+",\"brokerPending\":"+broker_pending_snapshot+",\"tradeHistory\":"+BrokerHistorySnapshot()+",\"sessionOpen\":"+(TradingSessionOpen(_Symbol)?"true":"false")+",\"symbolTradeMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_MODE))+",\"tradeExecutionMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_EXEMODE))+",\"orderMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE))+",\"fillingMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE))+",\"performance\":"+PerformanceSnapshot()+",\"tickSize\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),10)+",\"tickValue\":"+DoubleToString(tick_value,8)+",\"point\":"+DoubleToString(_Point,10)+",\"volumeStep\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),8)+",\"minVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN),8)+",\"maxVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),8)+",\"stopLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL))+",\"commissionPerLot\":"+DoubleToString(commission_per_lot,8)+",\"costsVerified\":"+(costs_verified?"true":"false")+",\"consecutiveLosses\":"+IntegerToString(consecutive_losses)+",\"consecutiveLossesVerified\":"+(loss_history_verified?"true":"false")+",\"dayStartEquity\":"+DoubleToString(risk_day_start,2)+",\"dailyLoss\":"+DoubleToString(risk_daily_loss,2)+",\"peakEquity\":"+DoubleToString(risk_peak,2)+",\"existingRisk\":"+DoubleToString(risk_existing,2)+",\"pendingOrders\":"+IntegerToString(OrdersTotal())+",\"freeMargin\":"+DoubleToString(MathMax(0,AccountInfoDouble(ACCOUNT_MARGIN_FREE)),2)+",\"tradeAllowed\":"+(TradeAllowed()?"true":"false")+",\"stopsVerified\":"+(risk_stops?"true":"false")+",\"newsVerified\":"+(news_verified?"true":"false")+",\"newsBlocked\":"+(news_blocked?"true":"false")+"}";
 }
 string TelemetryBody() {
    ENUM_ACCOUNT_TRADE_MODE mode=(ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(mode!=ACCOUNT_TRADE_MODE_REAL && mode!=ACCOUNT_TRADE_MODE_DEMO)return "";
    string account_type=(mode==ACCOUNT_TRADE_MODE_DEMO?"demo":"live");
    bool broker_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
-   string json="{\"accountLogin\":\""+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"brokerServer\":\""+EscapeJson(AccountInfoString(ACCOUNT_SERVER))+"\",\"accountType\":\""+account_type+"\",\"accountTradeMode\":"+IntegerToString((long)mode)+",\"chartSymbol\":\""+EscapeJson(_Symbol)+"\",\"authorizedSymbols\":[\""+EscapeJson(_Symbol)+"\"],\"instanceId\":\""+ea_instance+"\",\"eaVersion\":\"5.00\",\"terminalBuild\":"+IntegerToString(TerminalInfoInteger(TERMINAL_BUILD))+",\"brokerConnected\":"+(broker_connected?"true":"false")+"}";
+   string json="{\"accountLogin\":\""+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"brokerServer\":\""+EscapeJson(AccountInfoString(ACCOUNT_SERVER))+"\",\"accountType\":\""+account_type+"\",\"accountTradeMode\":"+IntegerToString((long)mode)+",\"chartSymbol\":\""+EscapeJson(_Symbol)+"\",\"authorizedSymbols\":[\""+EscapeJson(_Symbol)+"\"],\"instanceId\":\""+ea_instance+"\",\"eaVersion\":\"6.00\",\"terminalBuild\":"+IntegerToString(TerminalInfoInteger(TERMINAL_BUILD))+",\"brokerConnected\":"+(broker_connected?"true":"false")+"}";
    // Position/account synchronization must continue when chart candles or quotes are unavailable.
    positions_snapshot=PositionsSnapshot(positions_available);
    broker_pending_snapshot=PendingOrdersSnapshot(broker_pending_available);
@@ -452,8 +584,7 @@ bool SetFilling(MqlTradeRequest &request){
 }
 bool SafeOrder(string body,MqlTradeRequest &request){
    if(!registered || !order_permission || clock_anchor<=0 || !TradeAllowed() || !SameAccount(body))return false;
-   if(JsonValue(body,"engineVersion",true)!="rocket-ai-5")return false;
-   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_REAL && (StringFind(body,"\"liveConfirmed\":true")<0 || StringFind(body,"\"demoValidated\":true")<0))return false;
+   if(JsonValue(body,"engineVersion",true)!="rocket-ai-6")return false;
    double expiry=StringToDouble(JsonValue(body,"expiresAt",false));
    if(expiry<=ServerNow() || expiry>ServerNow()+60000)return false;
    string kind=JsonValue(body,"kind",true),symbol=JsonValue(body,"symbol",true),side=JsonValue(body,"side",true);
@@ -462,8 +593,8 @@ bool SafeOrder(string body,MqlTradeRequest &request){
    double volume=StringToDouble(JsonValue(body,"volume",false)),stop=StringToDouble(JsonValue(body,"stop",false)),tp=StringToDouble(JsonValue(body,"takeProfit",false)),review=StringToDouble(JsonValue(body,"entry",false));
    double spread_cap=StringToDouble(JsonValue(body,"maxSpread",false)),slippage_cap=StringToDouble(JsonValue(body,"maxSlippage",false));
    double risk_pct=StringToDouble(JsonValue(body,"riskPerTradePct",false)),daily_pct=StringToDouble(JsonValue(body,"maxDailyLossPct",false)),drawdown_pct=StringToDouble(JsonValue(body,"maxDrawdownPct",false)),position_limit=StringToDouble(JsonValue(body,"maxPositions",false));
-   if(volume<=0 || review<=0 || spread_cap<1 || spread_cap>1000 || slippage_cap<1 || slippage_cap>1000 || risk_pct<=0 || risk_pct>0.5 || daily_pct<=0 || daily_pct>5 || drawdown_pct<=0 || drawdown_pct>5 || position_limit<1 || position_limit>3)return false;
-   MqlTick quote;if(!SymbolInfoTick(symbol,quote) || quote.bid<=0 || quote.ask<quote.bid || BrokerNow()-quote.time>3 || quote.time>BrokerNow()+2)return false;
+   if(volume<=0 || review<=0 || spread_cap<1 || spread_cap>1000 || slippage_cap<1 || slippage_cap>1000 || risk_pct<=0 || risk_pct>0.25 || daily_pct<=0 || daily_pct>1 || drawdown_pct<=0 || drawdown_pct>5 || position_limit!=1)return false;
+   MqlTick quote;if(!FreshQuote(symbol,quote,3))return false;
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP),tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE),point=SymbolInfoDouble(symbol,SYMBOL_POINT);
    if(point<=0 || !SymbolExecutionAllowed(symbol,kind=="OPEN"))return false;
    if(step<=0 || tick<=0 || MathAbs(volume/step-MathRound(volume/step))>0.000001)return false;
@@ -489,24 +620,36 @@ bool SafeOrder(string body,MqlTradeRequest &request){
          if(buy?((existing>0 && stop<existing) || stop>=quote.bid-distance || tp<=quote.ask+distance):((existing>0 && stop>existing) || stop<=quote.ask+distance || tp>=quote.bid-distance))return false;
          request.action=TRADE_ACTION_SLTP;request.sl=stop;request.tp=tp;
       }else{
+         double freeze=(double)SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL)*point;
+         double current_stop=PositionGetDouble(POSITION_SL),current_tp=PositionGetDouble(POSITION_TP),close_price=buy?quote.bid:quote.ask;
+         if(freeze>0 && ((current_stop>0 && MathAbs(close_price-current_stop)<=freeze) || (current_tp>0 && MathAbs(close_price-current_tp)<=freeze)))return false;
          if(MathAbs((buy?quote.bid:quote.ask)-review)>slippage_cap*point)return false;
          request.action=TRADE_ACTION_DEAL;request.type=buy?ORDER_TYPE_SELL:ORDER_TYPE_BUY;request.volume=volume;request.price=buy?quote.bid:quote.ask;
          if(!SetFilling(request))return false;
       }
    }else{
       RefreshRisk();
-      if(!SymbolInfoTick(symbol,quote) || BrokerNow()-quote.time>3 || quote.time>BrokerNow()+2)return false;
-      if(!risk_stops || !news_verified || news_blocked || PositionsTotal()>=(int)position_limit || OrdersTotal()>0)return false;
-      if(!WinningAdditionsAllowed(symbol,side,quote))return false;
+      if(!FreshQuote(symbol,quote,3))return false;
+      if(!risk_stops || !news_verified || news_blocked || !loss_history_verified || consecutive_losses>=3 || PositionsTotal()>=(int)position_limit || OrdersTotal()>0 || !costs_verified)return false;
+      // One account position during initial testing: no grid, baskets, additions or averaging down.
+      if(PositionsTotal()!=0)return false;
+      double aggregate_pct=StringToDouble(JsonValue(body,"aggregateRiskPct",false)),min_rr=StringToDouble(JsonValue(body,"minRewardRisk",false));
+      if(aggregate_pct<=0 || aggregate_pct>0.25 || (min_rr<1.5 || min_rr>10))return false;
       double balance=AccountInfoDouble(ACCOUNT_BALANCE),equity=AccountInfoDouble(ACCOUNT_EQUITY),capital=MathMin(balance,equity),entry=side=="BUY"?quote.ask:quote.bid;
       if(capital<=0 || risk_daily_loss>=risk_day_start*daily_pct/100 || risk_peak<=0 || (risk_peak-equity)/risk_peak>=drawdown_pct/100 || (quote.ask-quote.bid)/point>spread_cap+0.00001 || MathAbs(entry-review)>slippage_cap*point)return false;
       if(stop<=0 || tp<=0 || MathAbs(stop/tick-MathRound(stop/tick))>0.00001 || MathAbs(tp/tick-MathRound(tp/tick))>0.00001)return false;
-      double distance=(double)SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL)*point;
+      double distance=(double)MathMax(SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL),SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL))*point;
       if(side=="BUY"?(stop>=quote.bid-distance || tp<=quote.ask+distance):(stop<=quote.ask+distance || tp>=quote.bid-distance))return false;
       ENUM_SYMBOL_TRADE_MODE mode=(ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(symbol,SYMBOL_TRADE_MODE);
       if(mode!=SYMBOL_TRADE_MODE_FULL && !(side=="BUY" && mode==SYMBOL_TRADE_MODE_LONGONLY) && !(side=="SELL" && mode==SYMBOL_TRADE_MODE_SHORTONLY))return false;
-      ENUM_ORDER_TYPE type=side=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;double loss=0,worst=entry+(side=="BUY"?slippage_cap:-slippage_cap)*point;
-      if(!OrderCalcProfit(type,symbol,volume,worst,stop,loss) || loss>=0 || -loss>capital*risk_pct/100 || risk_existing-loss>capital*.03)return false;
+      ENUM_ORDER_TYPE type=side=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;double loss=0,reward=0,margin=0,worst=entry+(side=="BUY"?slippage_cap:-slippage_cap)*point;
+      // Ask/Bid entry already includes the spread. Add both adverse entry/exit slippage and observed round-trip commission.
+      double worst_stop=stop+(side=="BUY"?-slippage_cap:slippage_cap)*point;
+      double worst_tp=tp+(side=="BUY"?-slippage_cap:slippage_cap)*point;
+      if(worst_stop<=0 || worst_tp<=0 || !OrderCalcProfit(type,symbol,volume,worst,worst_stop,loss) || !OrderCalcProfit(type,symbol,volume,worst,worst_tp,reward) || loss>=0)return false;
+      double cost=commission_per_lot*volume,total_risk=-loss+cost,net_reward=reward-cost;
+      if(!MathIsValidNumber(total_risk) || !MathIsValidNumber(net_reward) || total_risk<=0 || net_reward<=0 || total_risk>capital*risk_pct/100 || risk_existing+total_risk>capital*aggregate_pct/100 || net_reward/total_risk+0.000001<min_rr)return false;
+      if(!OrderCalcMargin(type,symbol,volume,worst,margin) || !MathIsValidNumber(margin) || margin<0 || margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))return false;
       request.action=TRADE_ACTION_DEAL;request.type=type;request.volume=volume;request.price=entry;request.sl=stop;request.tp=tp;
       if(!SetFilling(request))return false;
    }
@@ -529,20 +672,15 @@ void ExecuteBrokerCommand(string body){
    ResetLastError();GlobalVariablesFlush();if(GetLastError()!=0){BrokerResult(id,lease,"failed",0);return;}
    if(!SameAccount(authorized) || (request.position>0 && (!PositionSelectByTicket(request.position) || !PositionIntegrity() || TicketString((ulong)PositionGetInteger(POSITION_IDENTIFIER))!=JsonValue(authorized,"positionIdentifier",true) || MathAbs(PositionGetDouble(POSITION_VOLUME)-StringToDouble(JsonValue(authorized,"positionVolume",false)))>0.00000001))){BrokerResult(id,lease,"failed",0);return;}
    request.comment="R1000:"+StringSubstr(id,0,24);
+   active_id=id;active_lease=lease;active_kind=kind;active_symbol=request.symbol;active_position=request.position;active_identifier=JsonValue(authorized,"positionIdentifier",true);
+   active_order=0;active_volume=request.volume;active_filled=0;active_value=0;active_stop=request.sl;active_tp=request.tp;active_deal_count=0;
    MqlTradeResult result={};bool sent=OrderSend(request,result);string status="uncertain";
-   if(kind=="MODIFY"){
-      double tick=SymbolInfoDouble(request.symbol,SYMBOL_TRADE_TICK_SIZE);
-      if(sent && result.retcode==TRADE_RETCODE_DONE && PositionSelectByTicket(request.position) && MathAbs(PositionGetDouble(POSITION_SL)-request.sl)<tick/2 && MathAbs(PositionGetDouble(POSITION_TP)-request.tp)<tick/2)status="executed";
-   }else if(sent && result.deal>0 && result.price>0 && result.volume>0){
-      // Broker volume is authoritative even when its return code reports DONE.
-      double epsilon=MathMax(0.00000001,request.volume*0.00000001);
-      if(result.volume<=request.volume+epsilon){
-         if(result.retcode==TRADE_RETCODE_DONE)status=result.volume+epsilon<request.volume?"partial":"executed";
-         else if(result.retcode==TRADE_RETCODE_DONE_PARTIAL)status="partial";
-      }
-   }
+   active_order=result.order;
+   // OrderSend acceptance is not a fill. OnTradeTransaction/broker history confirm actual execution.
    if(status=="uncertain" && result.retcode!=0 && result.retcode!=TRADE_RETCODE_TIMEOUT && result.retcode!=TRADE_RETCODE_PLACED && result.retcode!=TRADE_RETCODE_CONNECTION && result.retcode!=TRADE_RETCODE_DONE && result.retcode!=TRADE_RETCODE_DONE_PARTIAL)status="failed";
-   BrokerResult(id,lease,status,result.retcode,result.deal,result.order,result.volume,result.price);
+   if(!sent && result.retcode==0)Print("ROCKET1000 EA: OrderSend did not confirm a broker response; command remains uncertain.");
+   BrokerResult(id,lease,status,result.retcode,0,result.order,0,0);
+   if(status=="failed")active_id="";
 }
 void ReconcileBrokerCommand(string body){
    string id=JsonValue(body,"orderId",true),lease=JsonValue(body,"lease",true),kind=JsonValue(body,"kind",true),symbol=JsonValue(body,"symbol",true);
@@ -574,7 +712,7 @@ void ReconcileBrokerCommand(string body){
 }
 int SendTelemetry(bool registration){
    string body="";int code=Post(registration?"/api/ea/register":"/api/ea/heartbeat",TelemetryBody(),body);
-   if(code==200){pending_result="";order_permission=StringFind(body,"\"tradingEnabled\":true")>=0;registered=true;string command=JsonValue(body,"command",true);if(command=="TRADE")ExecuteBrokerCommand(body);else if(command=="RECONCILE")ReconcileBrokerCommand(body);}
+   if(code==200){pending_result="";active_id="";order_permission=StringFind(body,"\"tradingEnabled\":true")>=0;registered=true;string command=JsonValue(body,"command",true);if(command=="TRADE")ExecuteBrokerCommand(body);else if(command=="RECONCILE")ReconcileBrokerCommand(body);}
    else order_permission=false;
    return code;
 }
@@ -586,7 +724,7 @@ int OnInit() {
       Print("ROCKET1000 EA: use the personalized EA downloaded from your dashboard. No manual token or URL entry is required.");
       ShowStatus("Disconnected - connection configuration missing or invalid");
    }
-   if(!EventSetTimer(5)) return INIT_FAILED;
+   if(!EventSetTimer(1)) return INIT_FAILED;
    next_attempt=0;
    return INIT_SUCCEEDED;
 }
@@ -594,7 +732,7 @@ void OnDeinit(const int reason) { EventKillTimer();Comment(""); }
 void OnTimer() {
    ulong tick=GetTickCount64();
    if(tick<next_attempt) return;
-   if(account_stamp!=AccountStamp()){account_stamp=AccountStamp();registered=false;order_permission=false;terminal_session=NewSession();pending_result="";broker_anchor=0;}
+   if(account_stamp!=AccountStamp()){account_stamp=AccountStamp();registered=false;order_permission=false;terminal_session=NewSession();pending_result="";active_id="";broker_anchor=0;quote_count=0;costs_until=0;performance_until=0;}
    if(!LoadConfig()) {registered=false;order_permission=false;ShowStatus("Disconnected - download the personalized EA again");next_attempt=tick+15000;return;}
    if(!TerminalInfoInteger(TERMINAL_CONNECTED) || AccountInfoInteger(ACCOUNT_LOGIN)<=0) {
       if(registered)terminal_session=NewSession();order_permission=false;
@@ -607,13 +745,43 @@ void OnTimer() {
    }
    if(!registered) ShowStatus("Connecting");
    int code=SendTelemetry(!registered);
-   if(code==200) { registered=true;retry_seconds=5;next_attempt=tick+5000;ShowStatus("Connected");return; }
+   if(code==200) { registered=true;retry_seconds=5;next_attempt=GetTickCount64()+5000;ShowStatus("Connected");return; }
    if(registered)terminal_session=NewSession();registered=false;order_permission=false;
    if(code==401) ShowStatus("Authentication Failed - download a replacement package");
    else if(code==403) ShowStatus("Account Mismatch - check the authorized MT5 account and server");
    else if(code!=-1 && code!=-2) ShowStatus("Disconnected - backend HTTP "+IntegerToString(code));
-   next_attempt=tick+(ulong)retry_seconds*1000;
+   next_attempt=GetTickCount64()+(ulong)retry_seconds*1000;
    retry_seconds=MathMin(retry_seconds*2,60);
 }
-void OnTick() { /* Real orders require an authenticated, risk-approved server command. */ }
+void OnTick() {
+   // Data observation only. No independent entry, exit, indicators or strategy decisions.
+   MqlTick quote;FreshQuote(_Symbol,quote,15);
+}
+void OnTradeTransaction(const MqlTradeTransaction &transaction,const MqlTradeRequest &request,const MqlTradeResult &result){
+   // Keep this callback bounded; no network, analysis or broker submissions here.
+   performance_until=0;costs_until=0;next_attempt=GetTickCount64()+100;
+   if(active_id=="" || account_stamp!=AccountStamp())return;
+   string tag="R1000:"+StringSubstr(active_id,0,24);
+   if(active_kind=="MODIFY"){
+      if(transaction.type!=TRADE_TRANSACTION_REQUEST || request.magic!=100061 || request.comment!=tag || request.action!=TRADE_ACTION_SLTP || request.position!=active_position || result.retcode!=TRADE_RETCODE_DONE)return;
+      double tick=SymbolInfoDouble(active_symbol,SYMBOL_TRADE_TICK_SIZE);
+      if(tick>0 && PositionSelectByTicket(active_position) && PositionGetInteger(POSITION_MAGIC)==100061 && PositionGetString(POSITION_SYMBOL)==active_symbol && TicketString((ulong)PositionGetInteger(POSITION_IDENTIFIER))==active_identifier && MathAbs(PositionGetDouble(POSITION_SL)-active_stop)<tick/2 && MathAbs(PositionGetDouble(POSITION_TP)-active_tp)<tick/2)BrokerResult(active_id,active_lease,"executed",result.retcode,0,0,0,0,"position-state");
+      return;
+   }
+   if(transaction.type!=TRADE_TRANSACTION_DEAL_ADD || transaction.deal==0 || !HistoryDealSelect(transaction.deal))return;
+   if(HistoryDealGetInteger(transaction.deal,DEAL_MAGIC)!=100061 || HistoryDealGetString(transaction.deal,DEAL_SYMBOL)!=active_symbol)return;
+   ulong order=(ulong)HistoryDealGetInteger(transaction.deal,DEAL_ORDER);
+   if((active_order==0 || order!=active_order) && HistoryDealGetString(transaction.deal,DEAL_COMMENT)!=tag && HistoryOrderGetString(order,ORDER_COMMENT)!=tag)return;
+   long type=HistoryDealGetInteger(transaction.deal,DEAL_TYPE),entry=HistoryDealGetInteger(transaction.deal,DEAL_ENTRY);
+   if((type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL) || (active_kind=="OPEN" && entry!=DEAL_ENTRY_IN) || (active_kind=="CLOSE" && (entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)))return;
+   if(active_kind=="CLOSE" && TicketString((ulong)HistoryDealGetInteger(transaction.deal,DEAL_POSITION_ID))!=active_identifier)return;
+   for(int i=0;i<active_deal_count;i++)if(active_deals[i]==transaction.deal)return;
+   if(active_deal_count>=128)return; // Larger fill sets remain uncertain until full broker-history reconciliation.
+   double volume=HistoryDealGetDouble(transaction.deal,DEAL_VOLUME),price=HistoryDealGetDouble(transaction.deal,DEAL_PRICE);
+   if(volume<=0 || price<=0 || !MathIsValidNumber(volume) || !MathIsValidNumber(price))return;
+   active_deals[active_deal_count++]=transaction.deal;active_filled+=volume;active_value+=volume*price;
+   double epsilon=MathMax(0.00000001,active_volume*0.00000001);
+   if(active_filled>active_volume+epsilon)return;
+   BrokerResult(active_id,active_lease,active_filled+epsilon<active_volume?"partial":"executed",0,transaction.deal,order,active_filled,active_value/active_filled,"broker-history");
+}
 

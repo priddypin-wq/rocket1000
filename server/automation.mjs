@@ -6,7 +6,6 @@ import { tradeContext, enqueueCommand, disableTrading } from "./trading.mjs";
 import { decisionBar } from "./market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
-import { winningAdditionAllowed } from "./winning-additions.mjs";
 
 export function automaticIntent(ctx, decision) {
   const { market: m, execution: e, settings: s } = ctx;
@@ -61,12 +60,10 @@ export function automaticIntent(ctx, decision) {
   }
   if (
     !["BUY", "SELL"].includes(decision.decision) ||
-    (positions.length
-      ? decision.entryAction !== "ADD"
-      : decision.entryAction !== "OPEN") ||
+    m.positions.length ||
+    decision.entryAction !== "OPEN" ||
     !Number.isFinite(decision.proposedLots) ||
     decision.proposedLots <= 0 ||
-    !winningAdditionAllowed(ctx, decision.decision) ||
     !ctx.enabled ||
     !profile?.ready ||
     !profile.allowedStrategies.includes(decision.strategy)
@@ -94,9 +91,9 @@ export function automaticIntent(ctx, decision) {
       ? !(stop < m.bid && takeProfit > m.ask)
       : !(stop > m.ask && takeProfit < m.bid)) ||
     Math.abs(entry - stop) + 1e-8 <
-      Math.max(s.stopLossPoints, e.stopLevel + 2) * e.point ||
+      Math.max(0, e.stopLevel + 2, (e.freezeLevel || 0) + 2) * e.point ||
     Math.abs(entry - takeProfit) + 1e-8 <
-      Math.max(s.takeProfitPoints, e.stopLevel + 2) * e.point ||
+      Math.max(0, e.stopLevel + 2, (e.freezeLevel || 0) + 2) * e.point ||
     Math.abs(entry - takeProfit) / Math.abs(entry - stop) + 1e-8 <
       ctx.profile.minRewardRisk
   )
@@ -133,29 +130,30 @@ export function automationService(
           !a ||
           a.state !== "running" ||
           a.installation_id !== installationId ||
-          !ctx.permissionActive ||
           (analyzer === analyzeMarket && !ctx.analysisEngineActive) ||
           ctx.execution.protocol !== 4
         )
           return { state: "stopped" };
-        observedRun = { runId: a.run_id, cid: ctx.c.id };
+        observedRun = { runId: a.run_id, cid: ctx.c.id, session: a.session_id };
         if (ctx.execution.engineVersion !== ENGINE_VERSION) {
           await disableTrading(tx, ctx.c.id, now());
           await tx.query(
             "UPDATE rocket_automation SET last_error=? WHERE connection_id=?",
             [
-              "Install ROCKET1000 EA 5.00 and verify the current engine before restarting automatic trading.",
+              "Install ROCKET1000 EA 6.00 and verify the current engine before restarting automatic trading.",
               ctx.c.id,
             ],
           );
           return { state: "stopped" };
         }
+        if (!ctx.permissionActive) return { state: "stopped" };
         const m = ctx.market,
           e = ctx.execution,
           s = ctx.settings,
           bar = decisionBar(m);
         if (
-          e.dailyLoss >= (e.dayStartEquity * s.maxDailyLossPct) / 100 ||
+          Math.max(e.dailyLoss, e.dayStartEquity - m.equity) >=
+            (e.dayStartEquity * s.maxDailyLossPct) / 100 ||
           (e.peakEquity - m.equity) / e.peakEquity >= s.maxDrawdownPct / 100
         ) {
           await disableTrading(tx, ctx.c.id, now());
@@ -290,9 +288,10 @@ export function automationService(
           )
             return { state: "waiting-analysis-interval" };
         }
+        const leaseUntil = now() + 90000;
         await tx.query(
           "UPDATE rocket_automation SET last_cycle=?,last_bar=?,lease_until=?,last_error=NULL WHERE connection_id=?",
-          [now(), bar, now() + 90000, ctx.c.id],
+          [now(), bar, leaseUntil, ctx.c.id],
         );
         return {
           state: "analyze",
@@ -301,6 +300,7 @@ export function automationService(
           runId: a.run_id,
           bar,
           session: ctx.x.session_id,
+          leaseUntil,
           accountKey: ctx.consent.key,
           suppliedResult,
         };
@@ -374,6 +374,8 @@ export function automationService(
         return { state: "queued", ...command };
       });
     } catch (error) {
+      if (error instanceof ApiError && error.code === "TRADING_COOLDOWN")
+        return { state: "waiting-cooldown" };
       const runIdentity = job?.runId ? job : observedRun;
       if (runIdentity?.runId)
         await db.transaction(async (tx) => {
@@ -382,10 +384,15 @@ export function automationService(
             [i.connection_id],
           );
           const [a] = await tx.query(
-            "SELECT run_id FROM rocket_automation WHERE connection_id=?",
+            "SELECT run_id,session_id,state,lease_until FROM rocket_automation WHERE connection_id=?",
             [i.connection_id],
           );
-          if (a?.run_id === runIdentity.runId) {
+          if (
+            a?.run_id === runIdentity.runId &&
+            a.session_id === runIdentity.session &&
+            a.state === "running" &&
+            (!job?.runId || Number(a.lease_until) === job.leaseUntil)
+          ) {
             await disableTrading(tx, i.connection_id, now());
             await tx.query(
               "UPDATE rocket_automation SET last_error=? WHERE connection_id=?",

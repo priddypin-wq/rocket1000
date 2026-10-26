@@ -33,6 +33,10 @@ const execution = {
   pendingOrders: 0,
   tradeAllowed: true,
   stopsVerified: true,
+  costsVerified: true,
+  commissionPerLot: 0,
+  consecutiveLosses: 0,
+  consecutiveLossesVerified: true,
   newsVerified: true,
   newsBlocked: false,
 };
@@ -117,10 +121,9 @@ for (const type of ["demo", "live"])
       await assert.rejects(
         f.trade.act("alice", {
           action: "enable",
-          accountKey: (await f.trade.status("alice")).accountKey,
-          confirmation: "ENABLE LIVE wrong",
+          accountKey: "wrong-account",
         }),
-        /confirmation/,
+        /account changed/,
       );
       await f.enable();
       const review = await f.preview();
@@ -216,7 +219,10 @@ for (const label of [
       if (label === "new session")
         await f.send({ terminalSession: "abcdef0123456789abcdef01" });
       if (label === "revoke") await f.service.revoke("alice", f.id);
-      if (label === "rotation") await f.download();
+      if (label === "rotation") {
+        await f.service.revoke("alice", f.id);
+        await f.download();
+      }
       if (label === "stop") await f.service.stop("alice");
       if (label === "account mismatch")
         await assert.rejects(
@@ -280,7 +286,7 @@ test("expired reviews, changed prices, invalid stops and same-symbol averaging a
         ],
       },
     });
-    await assert.rejects(f.preview(), /already exists/);
+    await assert.rejects(f.preview(), /Maximum 1|already exists/);
   } finally {
     await f.db.close();
   }
@@ -294,11 +300,15 @@ for (const [label, patch] of Object.entries({
   "daily loss": { dailyLoss: 1000 },
   drawdown: { peakEquity: 21000 },
 }))
-  test(`cannot enable when ${label}`, async () => {
+  test(`cannot open when ${label}`, async () => {
     const f = await setup();
     try {
       await f.send({ execution: { ...execution, ...patch } });
-      await assert.rejects(f.enable());
+      if (patch.tradeAllowed === false) await assert.rejects(f.enable());
+      else {
+        await f.enable();
+        await assert.rejects(f.preview());
+      }
       assert.equal((await f.trade.status("alice")).enabled, false);
     } finally {
       await f.db.close();
@@ -319,7 +329,7 @@ test("unknown broker outcome blocks new orders and is never automatically retrie
     const s = await f.trade.status("alice");
     assert.equal(s.orders[0].status, "uncertain");
     assert.equal(s.enabled, false);
-    await assert.rejects(f.enable(), /reconciliation/);
+    await assert.rejects(f.enable(), /reconcil/);
     const reconciliation = await f.send();
     assert.equal(reconciliation.command, "RECONCILE");
     assert.equal(reconciliation.orderId, c.orderId);
@@ -387,7 +397,7 @@ test("browser-supplied AI provenance and oversized risk never become automatic e
       },
     });
     assert.ok(review.order.volume < 1);
-    assert.equal(review.order.riskPercent, 0.5);
+    assert.equal(review.order.riskPercent, 0.25);
     assert.notEqual(review.order.analysisId, "invented-analysis");
     assert.ok(review.order.analysisId);
     assert.equal(review.order.source, "ai");

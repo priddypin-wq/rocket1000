@@ -10,10 +10,11 @@ export const defaultTradeSettings = Object.freeze({
   takeProfitPoints: 1000,
   trailingStopPoints: 500,
   breakEvenPoints: 500,
-  riskPerTradePct: 0.5,
-  maxDailyLossPct: 5,
+  riskPerTradePct: 0.25,
+  maxAggregateRiskPct: 0.25,
+  maxDailyLossPct: 1,
   maxDrawdownPct: 5,
-  maxPositions: 3,
+  maxPositions: 1,
   minConfidence: 0.75,
   intervalSeconds: 60,
   maxSpreadPoints: 100,
@@ -47,10 +48,11 @@ export function validateTradeSettings(value) {
     takeProfitPoints: [1, 10000000],
     trailingStopPoints: [0, 10000000],
     breakEvenPoints: [0, 10000000],
-    riskPerTradePct: [0.1, 0.5],
-    maxDailyLossPct: [0.1, 5],
+    riskPerTradePct: [0.05, 0.25],
+    maxAggregateRiskPct: [0.05, 0.25],
+    maxDailyLossPct: [0.1, 1],
     maxDrawdownPct: [0.1, 5],
-    maxPositions: [1, 3],
+    maxPositions: [1, 1],
     minConfidence: [0.5, 1],
     intervalSeconds: [60, 3600],
     maxSpreadPoints: [1, 1000],
@@ -65,7 +67,7 @@ export function validateTradeSettings(value) {
   )
     throw new ApiError(
       422,
-      "Use positive broker sizes, up to 0.5% risk per trade, 5% daily loss/drawdown and three positions.",
+      "Use positive broker sizes, up to 0.25% trade/aggregate risk, 1% daily loss, 5% drawdown and one position.",
     );
   return s;
 }
@@ -82,7 +84,12 @@ export async function tradeSettings(tx, cid) {
   // The policy was tightened from 1%. Existing accounts retain any lower
   // preference while an old, higher preference cannot expand the new hard cap.
   if (Number.isFinite(saved?.riskPerTradePct))
-    saved.riskPerTradePct = Math.min(0.5, saved.riskPerTradePct);
+    saved.riskPerTradePct = Math.min(0.25, saved.riskPerTradePct);
+  if (Number.isFinite(saved?.maxAggregateRiskPct))
+    saved.maxAggregateRiskPct = Math.min(0.25, saved.maxAggregateRiskPct);
+  if (Number.isFinite(saved?.maxDailyLossPct))
+    saved.maxDailyLossPct = Math.min(1, saved.maxDailyLossPct);
+  if (Number.isFinite(saved?.maxPositions)) saved.maxPositions = 1;
   return {
     settings: validateTradeSettings(saved),
     revision: r.revision,

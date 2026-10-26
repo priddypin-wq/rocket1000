@@ -63,6 +63,10 @@ export function usageService(
         [now(), reason, c.id],
       );
       await disableTrading(tx, c.id, now());
+      await tx.query(
+        "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason=? WHERE connection_id=? AND paused=0",
+        [now() + 300000, reason, c.id],
+      );
     });
   }
   async function totals(uid, tx = db) {

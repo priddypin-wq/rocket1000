@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { fixture, market, terminal } from "./helpers.mjs";
+import {
+  fixture,
+  market,
+  terminal,
+  seedAnalysisEngineFixture,
+} from "./helpers.mjs";
 import { ordersDashboardService } from "../server/orders-dashboard.mjs";
 import { tradingService, validateExecution } from "../server/trading.mjs";
 import { accountKey } from "../server/trade-settings.mjs";
@@ -35,6 +40,10 @@ async function setup() {
     pendingOrders: 0,
     tradeAllowed: true,
     stopsVerified: true,
+    costsVerified: true,
+    commissionPerLot: 0,
+    consecutiveLosses: 0,
+    consecutiveLossesVerified: true,
     newsVerified: true,
     newsBlocked: false,
     positionsAvailable: true,
@@ -351,6 +360,7 @@ test("an owned old-symbol position may close only with its own fresh symbol chec
         order: { kind: "CLOSE", position: p.ticket },
       });
     await assert.rejects(review(), /permission/);
+    await seedAnalysisEngineFixture(f);
     await trade.act("alice", {
       action: "enable",
       accountKey: (await trade.status("alice")).accountKey,
@@ -390,6 +400,7 @@ test("closing a position remains one reviewed idempotent command and rejects cha
     const trade = tradingService(f.db, { now: f.now });
     const p = await f.seedPosition();
     await f.report([p]);
+    await seedAnalysisEngineFixture(f);
     await trade.act("alice", {
       action: "enable",
       accountKey: (await trade.status("alice")).accountKey,
@@ -523,13 +534,16 @@ test("valid WAIT is informational only; stale, wrong-symbol and wrong-engine ana
     await f.db.close();
   }
 });
-test("saved alternative model proposals remain visible; other models cannot become opportunities", async () => {
+test("server-configured alternative model proposals remain visible; other models cannot become opportunities", async () => {
   const f = await setup();
+  const previousModel = process.env.OPENAI_MODEL;
   try {
     const model = "gpt-5-mini";
+    process.env.OPENAI_MODEL = model;
     await openaiCredentialService(f.db, {
       now: f.now,
       env: {
+        ROCKET_OPENAI_SERVER_MANAGED: "0",
         ROCKET_OPENAI_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
       },
     }).save("alice", {
@@ -594,6 +608,8 @@ test("saved alternative model proposals remain visible; other models cannot beco
       assert.deepEqual(s.opportunities, []);
     }
   } finally {
+    if (previousModel === undefined) delete process.env.OPENAI_MODEL;
+    else process.env.OPENAI_MODEL = previousModel;
     await f.db.close();
   }
 });
@@ -671,6 +687,7 @@ test("proposal readiness uses deterministic risk checks and stays separate from 
       (await f.status()).opportunities[0].status,
       "Waiting for Confirmation",
     );
+    await seedAnalysisEngineFixture(f);
     await trade.act("alice", {
       action: "enable",
       accountKey: state.accountKey,

@@ -46,8 +46,7 @@ export function analysisQueue(
       "SELECT run_id,state FROM rocket_analysis_engine WHERE connection_id=?",
       [cid],
     );
-    if ((await engine.scheduler(cid, active(a) ? a.run_id : null)).configured)
-      return;
+    if (active(a) && (await engine.scheduler(cid, a.run_id)).configured) return;
     const stamp = now();
     const reserved = await db.transaction(async (tx) => {
       await tx.query(
@@ -102,12 +101,14 @@ export function analysisQueue(
         "UPDATE rocket_analysis_engine SET state='suspended' WHERE connection_id=?",
         [cid],
       );
+      await tx.query(
+        "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason='Background scheduling interrupted.' WHERE connection_id=? AND paused=0",
+        [now() + 300000, cid],
+      );
     });
   }
-  async function start(uid) {
-    if (enabled) await probe(uid);
-    const status = await engine.start(uid);
-    if (!enabled) return status;
+  async function dispatchRun(uid, { onlyNew = false } = {}) {
+    if (!enabled) return engine.status(uid);
     const cid = await connection(uid);
     const [a] = await db.query(
       "SELECT run_id,state FROM rocket_analysis_engine WHERE connection_id=?",
@@ -115,6 +116,11 @@ export function analysisQueue(
     );
     if (!active(a)) return engine.status(uid);
     try {
+      const [existing] = await db.query(
+        "SELECT run_id FROM rocket_queue_dispatch WHERE connection_id=?",
+        [cid],
+      );
+      if (onlyNew && existing?.run_id === a.run_id) return engine.status(uid);
       await db.query(
         "INSERT INTO rocket_queue_dispatch(connection_id,run_id) VALUES(?,?) ON CONFLICT(connection_id) DO UPDATE SET run_id=excluded.run_id,next_cursor=CASE WHEN rocket_queue_dispatch.run_id=excluded.run_id THEN rocket_queue_dispatch.next_cursor ELSE 0 END,lease_until=CASE WHEN rocket_queue_dispatch.run_id=excluded.run_id THEN rocket_queue_dispatch.lease_until ELSE 0 END",
         [cid, a.run_id],
@@ -134,6 +140,25 @@ export function analysisQueue(
       );
     }
   }
+  async function start(uid) {
+    if (enabled) await probe(uid);
+    const status = await engine.start(uid);
+    if (!enabled) return status;
+    return dispatchRun(uid);
+  }
+  async function autoStart(uid) {
+    try {
+      if (enabled) await probe(uid);
+      if (typeof engine.autoStart !== "function") return engine.status(uid);
+      const status = await engine.autoStart(uid);
+      if (!enabled) return status;
+      return await dispatchRun(uid, { onlyNew: true });
+    } catch {
+      // EA connectivity is independent of a broken queue/provider. Failure is
+      // persisted by the engine/dispatcher and never grants usable execution.
+      return engine.status(uid);
+    }
+  }
   async function consume(message) {
     if (!enabled) throw new ApiError(503, "Queue analysis is disabled");
     if (
@@ -147,12 +172,13 @@ export function analysisQueue(
       throw new ApiError(400, "Invalid analysis queue message");
     const { connectionId: cid, runId, cursor } = message;
     const [c] = await db.query(
-      "SELECT id FROM rocket_direct_connections WHERE id=?",
+      "SELECT id,user_id FROM rocket_direct_connections WHERE id=?",
       [cid],
     );
     if (!c) return;
     if (runId === null) {
       await engine.heartbeat("queue", `queue:${cid}:probe`);
+      await autoStart(c.user_id);
       return;
     }
     const claimed = await db.transaction(async (tx) => {
@@ -200,5 +226,5 @@ export function analysisQueue(
       throw error;
     }
   }
-  return { enabled, probe, start, consume };
+  return { enabled, probe, start, autoStart, consume };
 }

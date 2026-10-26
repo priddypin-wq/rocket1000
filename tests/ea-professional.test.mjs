@@ -5,15 +5,17 @@ import { validateExecution } from "../server/trading.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { fixture, terminal, NOW } from "./helpers.mjs";
 
-test("native execution independently caps risk at half a percent and the unchanged protocol has no tick strategy", () => {
+test("native execution independently caps risk at a quarter percent and the unchanged protocol has no tick strategy", () => {
   const source = readFileSync(
     new URL("../ea/ROCKET1000_EA.mq5", import.meta.url),
     "utf8",
   );
-  assert.match(source, /#property version\s+"5\.00"/);
+  assert.match(source, /#property version\s+"6\.00"/);
   assert.ok(source.includes(`!="${ENGINE_VERSION}"`));
-  assert.match(source, /risk_pct<=0 \|\| risk_pct>0\.5 \|\|/);
-  assert.match(source, /void OnTick\(\)\s*\{\s*\/\*[^]*?\*\/\s*\}/);
+  assert.match(source, /risk_pct<=0 \|\| risk_pct>0\.25 \|\|/);
+  const onTick = source.split("void OnTick() {")[1].split("\n}")[0];
+  assert.match(onTick, /FreshQuote/);
+  assert.doesNotMatch(onTick, /OrderSend|ExecuteBrokerCommand/);
   assert.ok(source.includes('\\"eaProtocol\\":4'));
 });
 
@@ -38,6 +40,10 @@ function telemetry() {
     pendingOrders: 0,
     tradeAllowed: false,
     stopsVerified: true,
+    costsVerified: true,
+    commissionPerLot: 0,
+    consecutiveLosses: 0,
+    consecutiveLossesVerified: true,
     newsVerified: false,
     newsBlocked: true,
     sessionOpen: false,

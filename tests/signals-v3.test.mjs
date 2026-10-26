@@ -6,25 +6,45 @@ import {
   analyzeMarket,
   validateAssessment,
 } from "../server/ai-analysis.mjs";
-import { TIMEFRAMES, adaptiveProfile } from "../server/market.mjs";
+import {
+  TIMEFRAMES,
+  adaptiveProfile as baseProfile,
+} from "../server/market.mjs";
+
+import { selectedStrategyProfile } from "../server/strategy.mjs";
+function adaptiveProfile(s, settings = {}) {
+  return selectedStrategyProfile(s, settings, baseProfile(s, settings), {
+    sessionOpen: true,
+    tradeAllowed: true,
+    symbolTradeMode: 4,
+    tradeExecutionMode: 2,
+    orderMode: 49,
+    costsVerified: true,
+    commissionPerLot: 0,
+    tickSize: 0.01,
+    tickValue: 1,
+    point: 0.01,
+  });
+}
 
 // These tests inject deterministic HTTP responses. They are not a real model,
 // broker execution, or evidence of a successful paid provider request.
 const NOW = 1800000000000;
 const PRIVATE_KEY = "fixture-server-key-never-return-to-the-browser";
 const env = { OPENAI_API_KEY: PRIVATE_KEY };
-function snapshot() {
+function snapshot(side = "BUY") {
   const timeframes = Object.fromEntries(
     Object.entries(TIMEFRAMES).map(([name, seconds]) => [
       name,
       {
-        bars: Array.from({ length: 100 }, (_, i) => ({
+        bars: Array.from({ length: 220 }, (_, i) => ({
           time:
-            Math.floor(NOW / (seconds * 1000)) * seconds - (100 - i) * seconds,
-          open: 100 + i,
-          high: 101 + i,
-          low: 99 + i,
-          close: 100.5 + i,
+            Math.floor(NOW / (seconds * 1000)) * seconds - (220 - i) * seconds,
+          open: side === "BUY" ? 80 + i * (119 / 219) : 320 - i * (119 / 219),
+          high: side === "BUY" ? 81 + i * (119 / 219) : 321 - i * (119 / 219),
+          low: side === "BUY" ? 79 + i * (119 / 219) : 319 - i * (119 / 219),
+          close:
+            side === "BUY" ? 80.5 + i * (119 / 219) : 319.5 - i * (119 / 219),
           volume: 100 + i,
         })),
       },
@@ -125,12 +145,17 @@ test("direct OpenAI request uses the exact supported model and strict AI-plan sc
         "proposedLots",
         "entryAction",
         "positionActions",
+        "symbol",
+        "timestamp",
+        "entryConditions",
       ]);
       assert.deepEqual(Object.keys(schema.properties), schema.required);
-      assert.equal(schema.required.length, 12);
+      assert.equal(schema.required.length, 15);
       assert.deepEqual(schema.properties.decision.enum, [
         "BUY",
         "SELL",
+        "HOLD",
+        "CLOSE",
         "WAIT",
       ]);
       const context = JSON.parse(body.input);
@@ -174,7 +199,7 @@ test("direct OpenAI request uses the exact supported model and strict AI-plan sc
       assert.equal(context.accountRisk.balance, s.balance);
       assert.match(
         body.instructions,
-        /deterministic engine may only reduce lots or reject/,
+        /deterministic validation may only reduce size or reject/,
       );
       return Response.json(provider());
     }),
@@ -232,9 +257,9 @@ test("Gateway OIDC still targets the exact Sol model without exposing the bearer
 });
 
 test("valid BUY and SELL assessments retain their actual entry, SL and TP but never authorize execution", async () => {
-  const s = snapshot();
-  const profile = adaptiveProfile(s);
   for (const side of ["BUY", "SELL"]) {
+    const s = snapshot(side);
+    const profile = adaptiveProfile(s);
     const assessment = signal(side, s);
     assert.equal(validateAssessment(assessment, s, profile), assessment);
     const result = await analyzeMarket(
@@ -273,7 +298,7 @@ test("invalid BUY/SELL geometry, distant entry, non-finite prices and insufficie
   const aggressive = adaptiveProfile(s, { tradingMode: "aggressive" });
   assert.doesNotThrow(() =>
     validateAssessment(
-      signal("BUY", s, { takeProfit: s.ask + 2.5 }),
+      signal("BUY", s, { takeProfit: s.ask + 3.2 }),
       s,
       aggressive,
     ),

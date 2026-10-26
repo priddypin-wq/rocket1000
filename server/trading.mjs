@@ -4,7 +4,6 @@ import {
   validateSnapshot,
   adaptiveProfile,
   decisionBar,
-  requireMultiTimeframe,
   sanitizePositions,
 } from "./market.mjs";
 import { markManagedPositions } from "./position-ownership.mjs";
@@ -12,6 +11,10 @@ import { winningAdditionAllowed } from "./winning-additions.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
 import { configuredModel, isConfiguredModel } from "./ai-provider.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import {
+  pauseActivation,
+  environmentCredentialRevision,
+} from "./engine-activation.mjs";
 import { demoValidation, recordDemoValidation } from "./demo-validation.mjs";
 import { validateRisk } from "../lib/risk.mjs";
 import {
@@ -64,9 +67,18 @@ export function validateExecution(s) {
   const clean = Object.fromEntries(
     [...positive, ...nonnegative, ...flags].map((k) => [k, s[k]]),
   );
-  for (const key of ["realizedToday", "freezeLevel"])
+  for (const key of [
+    "realizedToday",
+    "freezeLevel",
+    "commissionPerLot",
+    "consecutiveLosses",
+  ])
     if (s[key] !== undefined) {
-      if (!Number.isFinite(s[key]) || (key === "freezeLevel" && s[key] < 0))
+      if (
+        !Number.isFinite(s[key]) ||
+        (key !== "realizedToday" && s[key] < 0) ||
+        (key === "consecutiveLosses" && !Number.isInteger(s[key]))
+      )
         throw new ApiError(422, "Invalid broker risk data.");
       clean[key] = s[key];
     }
@@ -86,6 +98,8 @@ export function validateExecution(s) {
     "positionsAvailable",
     "brokerPendingAvailable",
     "sessionOpen",
+    "costsVerified",
+    "consecutiveLossesVerified",
   ])
     if (s[name] !== undefined) {
       if (typeof s[name] !== "boolean")
@@ -124,6 +138,28 @@ export function validateExecution(s) {
         (k) => [k, a[k]],
       ),
     );
+    for (const field of [
+      "margin",
+      "freeMargin",
+      "marginLevel",
+      "floatingProfit",
+      "positionsCount",
+      "ordersCount",
+    ]) {
+      if (a[field] === undefined) continue;
+      if (
+        !Number.isFinite(a[field]) ||
+        Math.abs(a[field]) > 1e15 ||
+        (["margin", "marginLevel", "positionsCount", "ordersCount"].includes(
+          field,
+        ) &&
+          a[field] < 0) ||
+        (["positionsCount", "ordersCount"].includes(field) &&
+          !Number.isSafeInteger(a[field]))
+      )
+        throw new ApiError(422, "Invalid broker margin or account totals.");
+      clean.account[field] = a[field];
+    }
   }
   if (s.tradeHistory !== undefined) {
     const h = s.tradeHistory;
@@ -300,6 +336,23 @@ export async function disableTrading(tx, cid, now = Date.now()) {
   // A submitted/claimed command is never silently retried. The broker outcome may be unknown.
   await expireCommands(tx, cid, now);
 }
+// A temporary broker interruption suspends dispatch, preserving only an already
+// authorized, expiring session. STOP, revocation and account changes use disableTrading.
+export async function pauseForReconnect(tx, cid, now = Date.now()) {
+  await tx.query(
+    "UPDATE rocket_trade_commands SET status='cancelled' WHERE connection_id=? AND status='queued'",
+    [cid],
+  );
+  await tx.query(
+    "UPDATE rocket_trade_commands SET status='uncertain' WHERE connection_id=? AND status IN ('claimed','sending')",
+    [cid],
+  );
+  await tx.query(
+    "UPDATE rocket_automation SET state='reconnecting',lease_until=0 WHERE connection_id=? AND state='running'",
+    [cid],
+  );
+  await expireCommands(tx, cid, now);
+}
 // Emergency Stop revokes activation. Pausing automation and routine disconnects
 // preserve the account's approval for a separately reviewed restart.
 export async function revokeLiveActivation(tx, uid, now, { key } = {}) {
@@ -364,6 +417,10 @@ export async function tradeContext(tx, cid, now) {
   );
   const analysisEngineActive = !!(
     analysisEngine &&
+    (process.env.ROCKET_OPENAI_SERVER_MANAGED === "0" ||
+      (analysisEngine.key_revision.startsWith("environment:")
+        ? analysisEngine.key_revision === environmentCredentialRevision()
+        : process.env.NODE_ENV !== "production")) &&
     ["scheduled", "running"].includes(analysisEngine.state) &&
     analysisEngine.installation_id === i?.id &&
     analysisEngine.session_id === x?.session_id &&
@@ -393,7 +450,7 @@ export async function tradeContext(tx, cid, now) {
   )
     blockers.push("A fresh authenticated MT5 heartbeat is required.");
   if (!x || x.installation_id !== i?.id || now - Number(x.received_at) > 30000)
-    blockers.push("Install EA 5.00 and wait for fresh execution checks.");
+    blockers.push("Install EA 6.00 and wait for fresh execution checks.");
   let market = null,
     execution = null;
   try {
@@ -413,11 +470,11 @@ export async function tradeContext(tx, cid, now) {
     blockers.push("Broker execution checks are invalid.");
   }
   if (
-    symbolRegistration &&
-    (symbolRegistration.installation_id !== i?.id ||
-      symbolRegistration.session_id !== x?.session_id ||
-      symbolRegistration.account_key !== consent.key ||
-      (market && symbolRegistration.symbol !== market.symbol))
+    !symbolRegistration ||
+    symbolRegistration.installation_id !== i?.id ||
+    symbolRegistration.session_id !== x?.session_id ||
+    symbolRegistration.account_key !== consent.key ||
+    (market && symbolRegistration.symbol !== market.symbol)
   )
     blockers.push(
       "The exact EA chart symbol and account must be registered before trading.",
@@ -433,6 +490,16 @@ export async function tradeContext(tx, cid, now) {
     );
   const connectionBlockers = [...blockers];
   if (execution && market) {
+    if (
+      execution.engineVersion === ENGINE_VERSION &&
+      (execution.costsVerified !== true ||
+        execution.consecutiveLossesVerified !== true)
+    )
+      blockers.push(
+        "Verified execution costs and complete broker loss history are required for new orders.",
+      );
+    if (execution.consecutiveLosses >= 3)
+      blockers.push("Paused after three consecutive losing trades.");
     if (execution.sessionOpen === false)
       blockers.push(
         "The connected broker symbol is outside its trading session.",
@@ -456,7 +523,7 @@ export async function tradeContext(tx, cid, now) {
         `Maximum ${settings.maxPositions} open positions; your account already meets or exceeds this limit.`,
       );
     if (
-      execution.dailyLoss >=
+      Math.max(execution.dailyLoss, execution.dayStartEquity - market.equity) >=
       (execution.dayStartEquity * settings.maxDailyLossPct) / 100
     )
       blockers.push("Daily loss limit reached.");
@@ -467,9 +534,13 @@ export async function tradeContext(tx, cid, now) {
       blockers.push(`${settings.maxDrawdownPct}% drawdown limit reached.`);
     if (
       execution.existingRisk >=
-      Math.min(market.balance, market.equity) * 0.03
+      (Math.min(market.balance, market.equity) *
+        (settings.maxAggregateRiskPct ?? 0.25)) /
+        100
     )
-      blockers.push("3% aggregate risk limit reached.");
+      blockers.push(
+        `${settings.maxAggregateRiskPct ?? 0.25}% aggregate risk limit reached.`,
+      );
     const spreadCap =
       execution.protocol === 4 ? settings.maxSpreadPoints : MAX_SPREAD_POINTS;
     if ((market.ask - market.bid) / execution.point > spreadCap + 1e-6)
@@ -489,23 +560,18 @@ export async function tradeContext(tx, cid, now) {
     blockers.push(
       profile.reason || "Current market conditions block new entries.",
     );
-  if (i?.account_type === "live" && !validation.passed)
-    blockers.push(
-      "Complete the current engine's Demo execution validation before real-money trading.",
-    );
   const permissionActive = !!(
     p &&
     !c.stopped &&
     p.installation_id === i?.id &&
     p.session_id === x?.session_id &&
     Number(p.expires_at) > now &&
+    analysisEngineActive &&
     connectionBlockers.length === 0 &&
-    (i.account_type !== "live" ||
-      (consent.confirmed &&
-        validation.passed &&
-        execution?.protocol === 4 &&
-        !!execution.terminalId &&
-        execution.engineVersion === ENGINE_VERSION)) &&
+    ["demo", "live"].includes(i.account_type) &&
+    execution?.protocol === 4 &&
+    !!execution.terminalId &&
+    execution.engineVersion === ENGINE_VERSION &&
     !(
       i.account_type === "live" &&
       process.env.ROCKET_DISABLE_LIVE_ORDERS === "1"
@@ -531,7 +597,10 @@ export async function tradeContext(tx, cid, now) {
     automation,
     analysisEngine,
     analysisEngineActive,
-    aiModel: credential?.model || configuredModel(),
+    aiModel:
+      process.env.ROCKET_OPENAI_SERVER_MANAGED === "0"
+        ? credential?.model || configuredModel()
+        : configuredModel(),
     demoValidation: validation,
     profile,
     now,
@@ -575,7 +644,7 @@ export function orderRisk(ctx, order) {
         "Verified trading permission and an unambiguous broker state are required.",
       );
     if (e.protocol !== 4)
-      throw new ApiError(409, "Upgrade to EA 5.00 for position management.");
+      throw new ApiError(409, "Upgrade to EA 6.00 for position management.");
     const p = m?.positions.find(
       (p) => p.ticket === order.position && p.managed,
     );
@@ -726,7 +795,7 @@ export function orderRisk(ctx, order) {
       400,
       "Specify the chart symbol, side, stop-loss, take-profit and maximum lots.",
     );
-  if (!winningAdditionAllowed(ctx, order.side))
+  if (m.positions.length > 0 || !winningAdditionAllowed(ctx, order.side))
     throw new ApiError(
       409,
       "A position already exists on this symbol. Additions require a hedging account and verified winning positions protected at break-even. Adding to losses, averaging or offsetting positions is disabled.",
@@ -750,9 +819,9 @@ export function orderRisk(ctx, order) {
         "Current M1 and M5 trend direction no longer permits this scalp.",
       );
     const minimumStop =
-      Math.max(ctx.settings.stopLossPoints, e.stopLevel + 2) * e.point;
+      Math.max(0, e.stopLevel + 2, e.freezeLevel || 0) * e.point;
     const minimumTarget =
-      Math.max(ctx.settings.takeProfitPoints, e.stopLevel + 2) * e.point;
+      Math.max(0, e.stopLevel + 2, e.freezeLevel || 0) * e.point;
     if (
       !Number.isFinite(order.signalConfidence) ||
       order.signalConfidence < ctx.profile.minConfidence ||
@@ -766,7 +835,21 @@ export function orderRisk(ctx, order) {
         "Current price, confidence or protective distances no longer meet the selected AI mode.",
       );
   }
-  const distance = e.stopLevel * e.point;
+  if (
+    e.costsVerified !== true ||
+    e.consecutiveLossesVerified !== true ||
+    !Number.isFinite(e.commissionPerLot)
+  )
+    throw new ApiError(
+      409,
+      "Verified commission costs and complete broker loss history are required before opening orders.",
+    );
+  if (e.consecutiveLosses >= 3)
+    throw new ApiError(
+      409,
+      "Risk protection: paused after three consecutive losing trades.",
+    );
+  const distance = Math.max(e.stopLevel, e.freezeLevel || 0) * e.point;
   const reference = order.side === "BUY" ? m.bid : m.ask;
   if (
     order.side === "BUY"
@@ -782,6 +865,21 @@ export function orderRisk(ctx, order) {
   for (const price of [order.stop, order.takeProfit])
     if (Math.abs(price / e.tickSize - Math.round(price / e.tickSize)) > 1e-5)
       throw new ApiError(422, "Prices must follow the broker's tick size.");
+  const commission = e.commissionPerLot;
+  const adverseDistance = 2 * slippageCap * e.point;
+  const lossPerLot =
+    ((Math.abs(entry - order.stop) + adverseDistance) / e.tickSize) *
+      e.tickValue +
+    commission;
+  const rewardPerLot =
+    ((Math.abs(order.takeProfit - entry) - adverseDistance) / e.tickSize) *
+      e.tickValue -
+    commission;
+  if (!(rewardPerLot > 0) || rewardPerLot / lossPerLot + 1e-8 < 1.5)
+    throw new ApiError(
+      422,
+      "AI reward after verified costs must cover at least 1.5 times estimated loss.",
+    );
   const risk = validateRisk({
     ...e,
     balance: m.balance,
@@ -789,7 +887,9 @@ export function orderRisk(ctx, order) {
     openPositions: m.positions.length,
     entry:
       entry + (order.side === "BUY" ? slippageCap : -slippageCap) * e.point,
-    stop: order.stop,
+    stop:
+      order.stop +
+      (order.side === "BUY" ? -slippageCap : slippageCap) * e.point,
     side: order.side,
     maxVolume: Math.min(
       e.maxVolume,
@@ -804,8 +904,9 @@ export function orderRisk(ctx, order) {
     riskPerTrade:
       (ctx.profile?.ready
         ? ctx.profile.effectiveRiskPct
-        : Math.min(ctx.settings.riskPerTradePct, 0.5)) / 100,
+        : Math.min(ctx.settings.riskPerTradePct, 0.25)) / 100,
     dailyLossLimit: ctx.settings.maxDailyLossPct / 100,
+    aggregateLimit: (ctx.settings.maxAggregateRiskPct ?? 0.25) / 100,
     positionLimit: ctx.settings.maxPositions,
     connected: true,
     mode: ctx.i.account_type,
@@ -826,19 +927,75 @@ export function orderRisk(ctx, order) {
     volume: risk.volume,
     maxSpread: spreadCap,
     maxSlippage: slippageCap,
-    riskAmount:
-      (Math.abs(
-        entry +
-          (order.side === "BUY" ? slippageCap : -slippageCap) * e.point -
-          order.stop,
-      ) /
-        e.tickSize) *
-      e.tickValue *
-      risk.volume,
+    riskAmount: lossPerLot * risk.volume,
+    smartScalp: order.signalStrategy === "scalping",
+    aggregateRiskPct: ctx.settings.maxAggregateRiskPct ?? 0.25,
+    minRewardRisk: 1.5,
     riskPercent: ctx.profile?.ready
       ? ctx.profile.effectiveRiskPct
-      : Math.min(ctx.settings.riskPerTradePct, 0.5),
+      : Math.min(ctx.settings.riskPerTradePct, 0.25),
   };
+}
+// START AI is the one authenticated control for either account type. A mere
+// connection, account-type label or old approval record never grants a policy.
+export async function authorizeUnifiedAutomation(tx, ctx, now) {
+  if (!ctx.i || !ctx.x || ctx.connectionBlockers.length || ctx.unresolved)
+    throw new ApiError(
+      409,
+      ctx.connectionBlockers.join(" ") ||
+        "Verify the broker account and reconcile pending execution first.",
+    );
+  if (
+    ctx.execution?.protocol !== 4 ||
+    ctx.execution.engineVersion !== ENGINE_VERSION ||
+    !ctx.execution.terminalId
+  )
+    throw new ApiError(
+      409,
+      "Install EA 6.00 for the current authenticated execution engine.",
+    );
+  if (
+    !ctx.analysisEngine ||
+    !["scheduled", "running"].includes(ctx.analysisEngine.state) ||
+    ctx.analysisEngine.account_key !== ctx.consent.key ||
+    ctx.analysisEngine.session_id !== ctx.x.session_id ||
+    ctx.analysisEngine.installation_id !== ctx.i.id
+  )
+    throw new ApiError(
+      409,
+      "Verify OpenAI and use START AI before enabling automated execution.",
+      "AI_ENGINE_NOT_RUNNING",
+    );
+  if (
+    ctx.i.account_type === "live" &&
+    process.env.ROCKET_DISABLE_LIVE_ORDERS === "1"
+  )
+    throw new ApiError(
+      403,
+      "Broker Live orders are disabled by the server operator.",
+      "LIVE_OPERATOR_DISABLED",
+    );
+  await tx.query(
+    "INSERT INTO rocket_trade_policy(connection_id,installation_id,session_id,expires_at) VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,expires_at=excluded.expires_at",
+    [ctx.c.id, ctx.i.id, ctx.x.session_id, now + 86400000],
+  );
+  await tx.query("UPDATE rocket_direct_connections SET stopped=0 WHERE id=?", [
+    ctx.c.id,
+  ]);
+  await tx.query(
+    "INSERT INTO rocket_automation(connection_id,run_id,installation_id,session_id,state) VALUES(?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET run_id=excluded.run_id,installation_id=excluded.installation_id,session_id=excluded.session_id,state=excluded.state,last_cycle=0,last_bar=0,last_action_bar=0,lease_until=0,last_error=NULL",
+    [
+      ctx.c.id,
+      ctx.analysisEngine.run_id,
+      ctx.i.id,
+      ctx.x.session_id,
+      "running",
+    ],
+  );
+  await tx.query(
+    "INSERT INTO rocket_direct_audit(id,user_id,connection_id,event,created_at) VALUES(?,?,?,?,?)",
+    [randomUUID(), ctx.c.user_id, ctx.c.id, "unified_ai_trading_started", now],
+  );
 }
 export function tradingService(db, { now = Date.now } = {}) {
   async function owned(tx, uid) {
@@ -958,6 +1115,11 @@ export function tradingService(db, { now = Date.now } = {}) {
           [randomUUID(), uid, cid, event, now()],
         );
       if (input?.action === "pause-auto") {
+        await pauseActivation(tx, cid, "Automatic trading paused by user.");
+        await tx.query(
+          "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='Automatic trading paused by user.' WHERE connection_id=?",
+          [randomUUID(), cid],
+        );
         await disableTrading(tx, cid, now());
         await tx.query(
           "UPDATE rocket_direct_connections SET stopped=1 WHERE id=?",
@@ -967,6 +1129,11 @@ export function tradingService(db, { now = Date.now } = {}) {
         return { ok: true };
       }
       if (input?.action === "disable") {
+        await pauseActivation(tx, cid, "Emergency Stop activated.");
+        await tx.query(
+          "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='Emergency Stop activated.' WHERE connection_id=?",
+          [randomUUID(), cid],
+        );
         await disableTrading(tx, cid, now());
         await revokeLiveActivation(tx, uid, now());
         await tx.query(
@@ -995,283 +1162,38 @@ export function tradingService(db, { now = Date.now } = {}) {
         await audit("risk_settings_changed_automation_stopped");
         return { ok: true };
       }
-      if (["prepare-live", "confirm-live"].includes(input?.action)) {
-        if (
-          ctx.i?.account_type !== "live" ||
-          ctx.c.expected_type !== "live" ||
-          ctx.c.expected_login !== ctx.i.account_login ||
-          ctx.c.expected_server !== ctx.i.broker_server
-        )
-          throw new ApiError(
-            409,
-            "Connect and verify the specific Live MT5 account before activating it.",
-            "LIVE_ACCOUNT_REQUIRED",
-          );
-        if (!ctx.demoValidation.passed)
-          throw new ApiError(
-            403,
-            "Complete a successful Demo AI OPEN, stop modification and CLOSE cycle before enabling Live trading.",
-            "DEMO_VALIDATION_REQUIRED",
-          );
-        if (process.env.ROCKET_DISABLE_LIVE_ORDERS === "1")
-          throw new ApiError(
-            403,
-            "Live execution is disabled by the server operator.",
-            "LIVE_OPERATOR_DISABLED",
-          );
-        if (input.accountKey !== ctx.consent.key)
-          throw new ApiError(
-            409,
-            "The connected account changed. Review the Live account again.",
-            "LIVE_ACCOUNT_CHANGED",
-          );
-        if (ctx.connectionBlockers.length || ctx.unresolved)
-          throw new ApiError(
-            409,
-            ctx.connectionBlockers.join(" ") ||
-              "Reconcile the previous broker request before activating Live trading.",
-            "LIVE_VERIFICATION_REQUIRED",
-          );
-        if (
-          ctx.execution?.protocol !== 4 ||
-          ctx.execution.engineVersion !== ENGINE_VERSION ||
-          !ctx.execution.terminalId
-        )
-          throw new ApiError(
-            409,
-            "Install EA 5.00 and wait for current execution checks before activating Live trading.",
-            "LIVE_VERIFICATION_REQUIRED",
-          );
-        const serverTime = now();
-        if (input.action === "prepare-live") {
-          const review = {
-            accountKey: ctx.consent.key,
-            account: {
-              login: ctx.i.account_login,
-              server: ctx.i.broker_server,
-              type: ctx.i.account_type,
-            },
-            settings: ctx.settings,
-            currentRiskPct: ctx.profile?.ready
-              ? ctx.profile.effectiveRiskPct
-              : Math.min(ctx.settings.riskPerTradePct, 0.5),
-          };
-          const approvalId = randomUUID(),
-            expiresAt = serverTime + 60000;
-          // Only the most recently displayed review can activate this connection.
-          await tx.query(
-            "UPDATE rocket_live_approvals SET expires_at=? WHERE user_id=? AND connection_id=? AND used_at IS NULL",
-            [serverTime, uid, cid],
-          );
-          await tx.query(
-            "INSERT INTO rocket_live_approvals(id,user_id,connection_id,installation_id,session_id,account_key,settings_revision,engine_version,created_at,expires_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            [
-              approvalId,
-              uid,
-              cid,
-              ctx.i.id,
-              ctx.x.session_id,
-              ctx.consent.key,
-              ctx.revision,
-              ENGINE_VERSION,
-              serverTime,
-              expiresAt,
-              JSON.stringify(review),
-            ],
-          );
-          await audit("live_activation_review_prepared");
-          return { approvalId, expiresAt, serverTime, ...review };
-        }
-        if (
-          typeof input.approvalId !== "string" ||
-          !idPattern.test(input.approvalId) ||
-          input.acknowledgedRisk !== true ||
-          input.confirmation !== `ENABLE LIVE ${ctx.i.account_login}`
-        )
-          throw new ApiError(
-            400,
-            "Review the Live account, acknowledge the risk and type its confirmation exactly.",
-            "LIVE_APPROVAL_REQUIRED",
-          );
-        const [approval] = await tx.query(
-          `SELECT * FROM rocket_live_approvals WHERE id=? AND user_id=? AND connection_id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
-          [input.approvalId, uid, cid],
+      if (["prepare-live", "confirm-live"].includes(input?.action))
+        throw new ApiError(
+          410,
+          "Use the unified START AI control for the connected account.",
+          "UNIFIED_AI_CONTROL",
         );
-        if (
-          !approval ||
-          approval.used_at !== null ||
-          Number(approval.expires_at) <= serverTime ||
-          approval.installation_id !== ctx.i.id ||
-          approval.session_id !== ctx.x.session_id ||
-          approval.account_key !== ctx.consent.key ||
-          approval.settings_revision !== ctx.revision ||
-          approval.engine_version !== ENGINE_VERSION
-        )
-          throw new ApiError(
-            409,
-            "Live activation review expired, was used or the MT5 account, session or risk settings changed. Review again.",
-            "LIVE_APPROVAL_EXPIRED",
-          );
-        const consumed = await tx.query(
-          "UPDATE rocket_live_approvals SET used_at=? WHERE id=? AND used_at IS NULL AND expires_at>? RETURNING id",
-          [serverTime, approval.id, serverTime],
-        );
-        if (consumed.length !== 1)
-          throw new ApiError(
-            409,
-            "Live activation review is no longer valid. Review again.",
-            "LIVE_APPROVAL_EXPIRED",
-          );
-        // Activation grants permission for this account; a separate Start action
-        // must establish a fresh execution policy, including after an upgrade.
-        await disableTrading(tx, cid, serverTime);
-        await tx.query(
-          "UPDATE rocket_direct_connections SET stopped=1 WHERE id=?",
-          [cid],
-        );
-        await tx.query(
-          "INSERT INTO rocket_live_consents(user_id,account_key,account_login,broker_server,confirmed_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id,account_key) DO UPDATE SET account_login=excluded.account_login,broker_server=excluded.broker_server,confirmed_at=excluded.confirmed_at",
-          [
-            uid,
-            ctx.consent.key,
-            ctx.i.account_login,
-            ctx.i.broker_server,
-            serverTime,
-          ],
-        );
-        await audit("live_account_explicitly_confirmed");
-        return { ok: true, liveConfirmedAt: serverTime };
-      }
       if (input?.action === "revoke-live") {
+        await pauseActivation(tx, cid, "Automatic trading stopped by user.");
+        await tx.query(
+          "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='Automatic trading stopped by user.' WHERE connection_id=?",
+          [randomUUID(), cid],
+        );
         await disableTrading(tx, cid, now());
         await tx.query(
           "UPDATE rocket_direct_connections SET stopped=1 WHERE id=?",
           [cid],
         );
-        await revokeLiveActivation(tx, uid, now(), { key: ctx.consent.key });
-        await audit("live_account_confirmation_revoked");
+        await audit("unified_ai_execution_stopped");
         return { ok: true };
       }
-      if (input?.action === "start-auto") {
-        requireMultiTimeframe(ctx.market);
-        if (
-          ctx.execution?.protocol !== 4 ||
-          !ctx.execution.terminalId ||
-          ctx.execution.engineVersion !== ENGINE_VERSION
-        )
-          throw new ApiError(
-            409,
-            "Install EA 5.00 for multi-timeframe automatic trading.",
-          );
-        if (ctx.i?.account_type === "live" && !ctx.demoValidation.passed)
-          throw new ApiError(
-            403,
-            "Complete a successful Demo AI OPEN, stop modification and CLOSE cycle before enabling Live trading.",
-            "DEMO_VALIDATION_REQUIRED",
-          );
+      if (["start-auto", "enable"].includes(input?.action)) {
         if (input.accountKey !== ctx.consent.key)
           throw new ApiError(
             409,
-            "The connected account changed. Review it before starting.",
+            "The connected account changed. Refresh the account before starting.",
           );
-        if (
-          ctx.i?.account_type === "demo" &&
-          input.confirmation !== `ENABLE DEMO ${ctx.i.account_login}`
-        )
-          throw new ApiError(
-            400,
-            "Explicitly confirm this Demo account before enabling automatic execution.",
-            "DEMO_AUTHORIZATION_REQUIRED",
-          );
-        if (ctx.connectionBlockers.length || ctx.unresolved)
-          throw new ApiError(
-            409,
-            ctx.connectionBlockers.join(" ") ||
-              "Reconcile the previous broker request first.",
-          );
-        if (
-          ctx.i.account_type === "live" &&
-          (!ctx.consent.confirmed ||
-            process.env.ROCKET_DISABLE_LIVE_ORDERS === "1")
-        )
-          throw new ApiError(
-            403,
-            "This live account requires your explicit confirmation before real-money orders.",
-          );
-        const runId = randomUUID();
-        await tx.query(
-          "INSERT INTO rocket_trade_policy(connection_id,installation_id,session_id,expires_at) VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,expires_at=excluded.expires_at",
-          [cid, ctx.i.id, ctx.x.session_id, now() + 86400000],
-        );
-        await tx.query(
-          "UPDATE rocket_direct_connections SET stopped=0 WHERE id=?",
-          [cid],
-        );
-        await tx.query(
-          "INSERT INTO rocket_automation(connection_id,run_id,installation_id,session_id,state) VALUES(?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET run_id=excluded.run_id,installation_id=excluded.installation_id,session_id=excluded.session_id,state=excluded.state,last_cycle=0,last_bar=0,last_action_bar=0,lease_until=0,last_error=NULL",
-          [cid, runId, ctx.i.id, ctx.x.session_id, "running"],
-        );
-        await audit(`automatic_${ctx.i.account_type}_trading_started`);
-        return { ok: true, executionMode: "broker", runId };
-      }
-      if (input?.action === "enable") {
-        if (ctx.i?.account_type === "live" && !ctx.demoValidation.passed)
-          throw new ApiError(
-            403,
-            "Complete Demo validation before enabling real-money orders.",
-            "DEMO_VALIDATION_REQUIRED",
-          );
-        if (
-          ctx.execution?.protocol === 4 &&
-          input.accountKey !== ctx.consent.key
-        )
-          throw new ApiError(
-            409,
-            "The connected account changed. Review it before enabling orders.",
-          );
-        if (ctx.blockers.length)
-          throw new ApiError(409, ctx.blockers.join(" "));
-        if (
-          input.confirmation !==
-          `ENABLE ${ctx.i.account_type.toUpperCase()} ${ctx.i.account_login}`
-        )
-          throw new ApiError(
-            400,
-            "Type the displayed account confirmation exactly.",
-          );
-        if (ctx.i.account_type === "live") {
-          if (process.env.ROCKET_DISABLE_LIVE_ORDERS === "1")
-            throw new ApiError(
-              403,
-              "Live execution is disabled by the server operator.",
-            );
-          if (
-            ctx.execution.protocol !== 4 ||
-            ctx.execution.engineVersion !== ENGINE_VERSION ||
-            !ctx.execution.terminalId
-          )
-            throw new ApiError(
-              409,
-              "Install EA 5.00 and wait for current execution checks before enabling Live orders.",
-              "LIVE_VERIFICATION_REQUIRED",
-            );
-          if (!ctx.consent.confirmed)
-            throw new ApiError(
-              403,
-              "Activate this specific Live account in Settings before enabling real-money orders.",
-              "LIVE_APPROVAL_REQUIRED",
-            );
-        }
-        await tx.query(
-          "INSERT INTO rocket_trade_policy(connection_id,installation_id,session_id,expires_at) VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,expires_at=excluded.expires_at",
-          [cid, ctx.i.id, ctx.x.session_id, now() + 900000],
-        );
-        await tx.query(
-          "UPDATE rocket_direct_connections SET stopped=0 WHERE id=?",
-          [cid],
-        );
-        await audit(`reviewed_${ctx.i.account_type}_orders_enabled_15_minutes`);
-        return { ok: true };
+        await authorizeUnifiedAutomation(tx, ctx, now());
+        return {
+          ok: true,
+          executionMode: "broker",
+          runId: ctx.analysisEngine.run_id,
+        };
       }
       if (input?.action === "preview") {
         const kind = input.order?.kind || "OPEN";
@@ -1464,6 +1386,29 @@ export async function enqueueCommand(
   if (pending) throw new ApiError(409, "A broker request is already pending.");
   const assessment = await verifyAiCommand(tx, ctx, order, analysisId, now);
   const provenance = aiProvenance(assessment, analysisId);
+  if ((order.kind || "OPEN") === "OPEN") {
+    const recent = await tx.query(
+      "SELECT t.id,t.status,t.payload,t.created_at FROM rocket_trade_commands t JOIN rocket_command_accounts a ON a.command_id=t.id WHERE t.connection_id=? AND a.account_key=? ORDER BY t.created_at DESC LIMIT 100",
+      [ctx.c.id, ctx.consent.key],
+    );
+    const previous = recent.find(
+      (item) => JSON.parse(item.payload).kind === "OPEN",
+    );
+    if (previous) {
+      const entry = JSON.parse(previous.payload);
+      if (
+        entry.signalBarTime === provenance.signalBarTime &&
+        entry.symbol === order.symbol
+      )
+        return { id: previous.id, status: previous.status };
+      if (now - Number(previous.created_at) < 180000)
+        throw new ApiError(
+          409,
+          "Entry cooldown is active; continue observing the market.",
+          "TRADING_COOLDOWN",
+        );
+    }
+  }
   const approved = orderRisk(ctx, { ...order, ...provenance }),
     id = randomUUID();
   await tx.query(
@@ -1640,7 +1585,6 @@ export async function executionExchange(
   now,
   { register = false, authorize = false } = {},
 ) {
-  if (register) await disableTrading(tx, i.connection_id, now);
   if (authorize && ![3, 4].includes(input.eaProtocol))
     throw new ApiError(400, "Upgrade the EA before authorizing orders.");
   if (![3, 4].includes(input.eaProtocol))
@@ -1657,17 +1601,84 @@ export async function executionExchange(
     "SELECT * FROM rocket_execution WHERE connection_id=?",
     [i.connection_id],
   );
+  const [resumePolicy] = await tx.query(
+    "SELECT * FROM rocket_trade_policy WHERE connection_id=?",
+    [i.connection_id],
+  );
+  const [resumeEngine] = await tx.query(
+    "SELECT * FROM rocket_analysis_engine WHERE connection_id=?",
+    [i.connection_id],
+  );
+  const [resumeConnection] = await tx.query(
+    "SELECT stopped FROM rocket_direct_connections WHERE id=?",
+    [i.connection_id],
+  );
+  const [resumeAuto] = await tx.query(
+    "SELECT state,session_id,run_id FROM rocket_automation WHERE connection_id=?",
+    [i.connection_id],
+  );
+  let oldExecution = null;
+  try {
+    oldExecution = previous ? JSON.parse(previous.payload) : null;
+  } catch {
+    /* Invalid stored identity cannot resume. */
+  }
+  const sameAuthorizedAccount = !!(
+    resumePolicy &&
+    Number(resumePolicy.expires_at) > now &&
+    !resumeConnection?.stopped &&
+    resumePolicy.installation_id === i.id &&
+    resumeEngine?.installation_id === i.id &&
+    previous?.installation_id === i.id &&
+    resumePolicy.session_id === previous?.session_id &&
+    resumeEngine.session_id === previous?.session_id &&
+    resumeAuto?.session_id === previous?.session_id &&
+    resumeAuto.run_id === resumeEngine.run_id &&
+    resumeEngine.account_key ===
+      accountKey(input.accountLogin, input.brokerServer, input.accountType) &&
+    ["scheduled", "running"].includes(resumeEngine.state) &&
+    ["running", "reconnecting"].includes(resumeAuto?.state) &&
+    oldExecution?.terminalId &&
+    oldExecution.terminalId === x.terminalId &&
+    oldExecution.engineVersion === ENGINE_VERSION &&
+    x.engineVersion === ENGINE_VERSION
+  );
   if (
     register ||
     !previous ||
     previous.session_id !== input.terminalSession ||
     previous.installation_id !== i.id
   )
-    await disableTrading(tx, i.connection_id, now);
+    if (sameAuthorizedAccount)
+      await pauseForReconnect(tx, i.connection_id, now);
+    else await disableTrading(tx, i.connection_id, now);
   await tx.query(
     "INSERT INTO rocket_execution(connection_id,installation_id,session_id,payload,received_at) VALUES(?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,payload=excluded.payload,received_at=excluded.received_at",
     [i.connection_id, i.id, input.terminalSession, JSON.stringify(x), now],
   );
+  if (
+    sameAuthorizedAccount &&
+    (register ||
+      resumeAuto.state === "reconnecting" ||
+      previous?.session_id !== input.terminalSession)
+  ) {
+    await tx.query(
+      "UPDATE rocket_trade_policy SET session_id=? WHERE connection_id=?",
+      [input.terminalSession, i.connection_id],
+    );
+    await tx.query(
+      "UPDATE rocket_analysis_engine SET session_id=?,state='scheduled',lease_until=0,next_cycle=?,reason=NULL WHERE connection_id=? AND run_id=?",
+      [input.terminalSession, now, i.connection_id, resumeEngine.run_id],
+    );
+    await tx.query(
+      "UPDATE rocket_automation SET session_id=?,state='running',lease_until=0 WHERE connection_id=?",
+      [input.terminalSession, i.connection_id],
+    );
+    await tx.query(
+      "UPDATE rocket_analyses SET status='cancelled',error='Terminal session recovered',completed_at=? WHERE connection_id=? AND status='analyzing'",
+      [now, i.connection_id],
+    );
+  }
   const ack = input.orderResult;
   if (ack) {
     if (
@@ -1790,6 +1801,8 @@ export async function executionExchange(
     maxDailyLossPct: ctx.settings.maxDailyLossPct,
     maxDrawdownPct: ctx.settings.maxDrawdownPct,
     maxPositions: ctx.settings.maxPositions,
+    aggregateRiskPct: ctx.settings.maxAggregateRiskPct ?? 0.25,
+    minRewardRisk: 1.5,
   });
   if (authorize) {
     const a = input.authorization;

@@ -6,6 +6,8 @@ import { credentialChanged } from "../../../../server/engine-service.mjs";
 import {
   openaiCredentialService,
   assertOpenaiHttps,
+  openaiServerManaged,
+  assertOpenaiCredentialWritable,
 } from "../../../../server/openai-credentials.mjs";
 
 export const runtime = "nodejs";
@@ -27,6 +29,13 @@ export const POST = (req: Request) =>
         "Choose Save, Test or Remove.",
         "OPENAI_ACTION_INVALID",
       );
+    // In the default mode, even a test carrying an extra key/model is rejected.
+    // Only a fixed diagnostic request may cross the browser/server boundary.
+    if (
+      openaiServerManaged() &&
+      (body.action !== "test" || Object.keys(body).length !== 1)
+    )
+      assertOpenaiCredentialWritable();
     const db = getDatabase();
     const service = openaiCredentialService(db, {
       onChange: credentialChanged,

@@ -2,6 +2,7 @@ import { browserSessions, dashboardOrigin } from "./browser-session.mjs";
 import { getDatabase } from "./database.mjs";
 import { ApiError, provisioningService } from "./provisioning.mjs";
 import { automationService } from "./automation.mjs";
+import { analysisQueue } from "./analysis-queue.mjs";
 export const responseHeaders = {
   "Cache-Control": "private, no-store, max-age=0",
   Pragma: "no-cache",
@@ -107,10 +108,21 @@ export async function eaRequest(req, register, options = {}) {
     await service.rateLimit("ea-ingress", 3000);
     const result = await service.telemetry(
       token,
-      await jsonInput(req, 196608),
+      await jsonInput(req, 1048576),
       register,
       options,
     );
+    if (typeof options.schedule === "function")
+      options.schedule(async () => {
+        const db = getDatabase();
+        const [owner] = await db.query(
+          "SELECT c.user_id FROM rocket_direct_installations i JOIN rocket_direct_connections c ON c.id=i.connection_id WHERE i.id=? AND i.revoked_at IS NULL",
+          [result.installationId],
+        );
+        // This short-lived after task only publishes a durable callback. Paid
+        // verification/engine startup runs in that callback or a real worker.
+        if (owner) await analysisQueue(db).probe(owner.user_id);
+      });
     if (result.wakeAutomation && typeof options.schedule === "function")
       options.schedule(() =>
         automationService(getDatabase()).cycle(result.installationId),

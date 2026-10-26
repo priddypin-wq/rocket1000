@@ -61,6 +61,9 @@ export type Market = {
 };
 export type AnalysisResult = {
   decision: "BUY" | "SELL" | "WAIT";
+  aiDecision?: "BUY" | "SELL" | "WAIT" | "HOLD" | "CLOSE";
+  timestamp?: number;
+  entryConditions?: string[];
   confidence: number;
   strategy: string;
   reasoning: string;

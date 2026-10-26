@@ -159,17 +159,23 @@ export async function migrateConnections(db) {
     { analysisEngineSchema },
     { aiUsageSchema },
     { analysisQueueSchema },
+    { eaCredentialSchema },
+    { engineActivationSchema },
   ] = await Promise.all([
     import("./openai-credentials.mjs"),
     import("./engine-service.mjs"),
     import("./ai-usage.mjs"),
     import("./analysis-queue.mjs"),
+    import("./ea-credential-vault.mjs"),
+    import("./engine-activation.mjs"),
   ]);
   for (const sql of [
     ...openaiCredentialSchema,
     ...analysisEngineSchema,
     ...aiUsageSchema,
     ...analysisQueueSchema,
+    ...eaCredentialSchema,
+    ...engineActivationSchema,
   ])
     await db.query(sql);
   await db.query(

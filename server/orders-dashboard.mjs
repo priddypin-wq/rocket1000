@@ -226,6 +226,25 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
             dailyProfitLoss: fresh
               ? (execution?.account?.dailyProfitLoss ?? null)
               : null,
+            margin: fresh ? (execution?.account?.margin ?? null) : null,
+            freeMargin: fresh
+              ? (execution?.account?.freeMargin ??
+                execution?.freeMargin ??
+                null)
+              : null,
+            marginLevel: fresh
+              ? (execution?.account?.marginLevel ?? null)
+              : null,
+            floatingProfit: fresh
+              ? (execution?.account?.floatingProfit ?? null)
+              : null,
+            positionsCount: fresh
+              ? (execution?.account?.positionsCount ?? null)
+              : null,
+            ordersCount: fresh
+              ? (execution?.account?.ordersCount ?? null)
+              : null,
+            tradingAllowed: fresh ? (execution?.tradeAllowed ?? false) : false,
           }
         : null;
       const stored = await tx.query(
@@ -351,7 +370,10 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         "SELECT model FROM rocket_openai_credentials WHERE user_id=?",
         [uid],
       );
-      const activeModel = credential?.model || configuredModel();
+      const activeModel =
+        process.env.ROCKET_OPENAI_SERVER_MANAGED === "0"
+          ? credential?.model || configuredModel()
+          : configuredModel();
       const opportunities = [];
       let latestSignal = null;
       if (symbolFresh && analysis) {
@@ -399,6 +421,8 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
             id: analysis.id,
             symbol: a.symbol,
             decision: a.decision,
+            aiDecision: a.aiDecision || a.decision,
+            entryConditions: a.entryConditions || [],
             strategy: a.strategy,
             reasoning: a.reasoning,
             analyzedAt: a.analyzedAt,

@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { fixture, market, terminal, approveFixtureLive } from "./helpers.mjs";
+import {
+  fixture,
+  market,
+  terminal,
+  seedAnalysisEngineFixture,
+} from "./helpers.mjs";
 import {
   demoValidation,
   recordDemoValidation,
@@ -34,6 +39,10 @@ const execution = {
   pendingOrders: 0,
   tradeAllowed: true,
   stopsVerified: true,
+  costsVerified: true,
+  commissionPerLot: 0,
+  consecutiveLosses: 0,
+  consecutiveLossesVerified: true,
   newsVerified: true,
   newsBlocked: false,
 };
@@ -433,47 +442,35 @@ test("Live acknowledgements never satisfy the Demo acceptance requirement", asyn
   }
 });
 
-test("unvalidated Live account rejects confirmation, reviewed enable and automatic start; no browser action marks validation complete", async () => {
+test("Legacy Demo validation is diagnostic only; a current bound engine controls either account type", async () => {
   const f = await setup("live");
   try {
-    const key = (await f.status()).accountKey;
-    for (const action of [
-      "prepare-live",
-      "confirm-live",
-      "enable",
-      "start-auto",
-    ]) {
+    for (const action of ["prepare-live", "confirm-live"])
       await assert.rejects(
-        f.trade.act("alice", {
-          action,
-          accountKey: key,
-          confirmation: "ENABLE LIVE 12345678",
-        }),
-        (e) => e.status === 403 && e.code === "DEMO_VALIDATION_REQUIRED",
+        f.trade.act("alice", { action }),
+        (e) => e.status === 410 && e.code === "UNIFIED_AI_CONTROL",
       );
-    }
     await assert.rejects(
-      f.trade.act("alice", {
-        action: "mark-demo-complete",
-        engineVersion: ENGINE_VERSION,
-        passed: true,
-      }),
+      f.trade.act("alice", { action: "start-auto", accountKey: f.key() }),
+      /START AI/,
     );
+    await seedAnalysisEngineFixture(f);
+    await f.trade.act("alice", { action: "start-auto", accountKey: f.key() });
+    assert.equal((await f.status()).permissionActive, true);
     assert.equal((await demoValidation(f.db, "alice")).passed, false);
-    assert.equal((await f.status()).liveConfirmed, false);
+    await f.switch({ accountLogin: "87654321" });
     assert.equal((await f.status()).permissionActive, false);
+    await assert.rejects(
+      f.trade.act("alice", { action: "start-auto", accountKey: f.key() }),
+      /START AI/,
+    );
   } finally {
     await f.db.close();
   }
 });
-
-test("legacy persisted Live consent and permission cannot bypass current engine Demo validation", async () => {
+test("Legacy saved permission without a current authenticated AI run cannot dispatch", async () => {
   const f = await setup("live");
   try {
-    await f.db.query(
-      "INSERT INTO rocket_live_consents(user_id,account_key,account_login,broker_server,confirmed_at) VALUES(?,?,?,?,?)",
-      ["alice", f.key(), "12345678", "Fixture-Broker", f.now()],
-    );
     await f.db.query(
       "INSERT INTO rocket_trade_policy(connection_id,installation_id,session_id,expires_at) VALUES(?,?,?,?)",
       [f.id, f.token.split(".")[1], SESSION, f.now() + 900000],
@@ -482,56 +479,8 @@ test("legacy persisted Live consent and permission cannot bypass current engine 
       "UPDATE rocket_direct_connections SET stopped=0 WHERE id=?",
       [f.id],
     );
-    const state = await f.status();
-    assert.equal(state.liveConfirmed, false);
-    assert.equal(state.demoValidation.passed, false);
-    assert.equal(state.permissionActive, false);
-    assert.equal(state.enabled, false);
-    const response = await f.send();
-    assert.equal(response.tradingEnabled, false);
-    assert.equal(response.command, "NONE");
-  } finally {
-    await f.db.close();
-  }
-});
-
-test("successful Demo acceptance still requires explicit consent for each exact Live account before starting automation", async () => {
-  const f = await setup();
-  try {
-    const h = await seedCycle(f);
-    await h.ack();
-    await f.switch({ accountType: "live", brokerServer: "Fixture-Live" });
-    let state = await f.status();
-    assert.equal(state.demoValidation.passed, true);
-    assert.equal(state.liveConfirmed, false);
-    await assert.rejects(
-      f.trade.act("alice", {
-        action: "start-auto",
-        confirmation: "ENABLE DEMO 12345678",
-        accountKey: state.accountKey,
-      }),
-      /explicit confirmation/,
-    );
-    await approveFixtureLive(f.trade);
-    await f.trade.act("alice", {
-      action: "start-auto",
-      confirmation: "ENABLE DEMO 12345678",
-      accountKey: state.accountKey,
-    });
-    assert.equal((await f.status()).automation.state, "running");
-    await f.switch({ accountLogin: "87654321" });
-    state = await f.status();
-    assert.equal(state.demoValidation.passed, true);
-    assert.equal(state.liveConfirmed, false);
-    assert.equal(state.automation.state, "stopped");
-    await assert.rejects(
-      f.trade.act("alice", {
-        action: "start-auto",
-        confirmation: "ENABLE DEMO 12345678",
-        accountKey: state.accountKey,
-      }),
-      /explicit confirmation/,
-    );
+    assert.equal((await f.status()).permissionActive, false);
+    assert.equal((await f.send()).command, "NONE");
   } finally {
     await f.db.close();
   }

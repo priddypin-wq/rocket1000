@@ -8,7 +8,7 @@ export const TIMEFRAMES = Object.freeze({
 const barFields = ["time", "open", "high", "low", "close", "volume"];
 
 function closedBars(bars, seconds, brokerTimestamp, aligned = true) {
-  if (!Array.isArray(bars) || bars.length < 50 || bars.length > 120)
+  if (!Array.isArray(bars) || bars.length < 50 || bars.length > 500)
     return false;
   let previous = 0;
   for (const b of bars) {
@@ -238,7 +238,7 @@ export function validateSnapshot(s, now = Date.now()) {
     !/^[A-Z]{3,8}$/.test(s.currency) ||
     !Array.isArray(s.bars) ||
     s.bars.length < 50 ||
-    s.bars.length > 120 ||
+    s.bars.length > 500 ||
     !Array.isArray(s.positions) ||
     s.positions.length > 100
   )
@@ -338,6 +338,13 @@ function emaSeries(values, period) {
     (v, i) => (prior = i ? v * alpha + prior * (1 - alpha) : v),
   );
 }
+function seededEma(values, period) {
+  if (values.length < period) return null;
+  let value = values.slice(0, period).reduce((total, n) => total + n, 0) / period;
+  for (let i = period; i < values.length; i++)
+    value += (2 / (period + 1)) * (values[i] - value);
+  return value;
+}
 function wilderSeries(values, period) {
   let average = 0,
     sum = 0;
@@ -363,6 +370,7 @@ export function technicals(s) {
   const ema9 = emaSeries(closes, 9).at(-1);
   const ema21 = emaSeries(closes, 21).at(-1);
   const ema50 = emaSeries(closes, 50).at(-1);
+  const ema200 = seededEma(closes, 200);
   const fast = emaSeries(closes, 12);
   const slow = emaSeries(closes, 26);
   const macdValues = fast.map((v, i) => v - slow[i]);
@@ -422,6 +430,7 @@ export function technicals(s) {
     ema9,
     ema21,
     ema50,
+    ema200,
     rsi14,
     macd: {
       line: macdLine,
@@ -453,7 +462,7 @@ export function adaptiveProfile(s, settings = {}) {
     settings.tradingMode === "aggressive" ? "aggressive" : "balanced";
   const configuredRisk = Number.isFinite(settings.riskPerTradePct)
     ? Math.max(0, settings.riskPerTradePct)
-    : 0.5;
+    : 0.25;
   const minConfidence = Math.max(
     mode === "balanced" ? 0.8 : 0.75,
     Number.isFinite(settings.minConfidence)
@@ -466,7 +475,7 @@ export function adaptiveProfile(s, settings = {}) {
     regime: "unavailable",
     effectiveRiskPct: 0,
     minConfidence,
-    minRewardRisk: mode === "balanced" ? 1.5 : 1.2,
+    minRewardRisk: 1.5,
     scalpingEligible: false,
     scalpingSide: null,
     scalpingReason: "Complete, fresh M1, M5, M15 and H1 candles are required.",
@@ -526,6 +535,9 @@ export function adaptiveProfile(s, settings = {}) {
             ? "range"
             : "mixed";
   const m1 = frames.M1;
+  const scalpingHistoryReady = ["M1", "M5", "M15"].every(
+    (name) => frames[name].barCount >= 220 && Number.isFinite(frames[name].ema200),
+  );
   const momentumAgrees = (frame) =>
     direction === "up"
       ? frame.macd.line > 0 && frame.macd.histogram >= 0 && frame.rsi14 > 50
@@ -537,13 +549,16 @@ export function adaptiveProfile(s, settings = {}) {
   const affordable =
     (s.ask - s.bid) / m1.atr14 <= (mode === "balanced" ? 0.08 : 0.12);
   const scalpingEligible =
+    scalpingHistoryReady &&
     !extreme &&
     !inactive &&
     sameTrend &&
     momentumAgrees(m1) &&
     momentumAgrees(frames.M5) &&
     affordable;
-  const scalpingReason = extreme
+  const scalpingReason = !scalpingHistoryReady
+    ? "At least 220 completed M1, M5 and M15 candles are required for EMA 200 scalping analysis."
+    : extreme
     ? "Extreme volatility blocks scalping."
     : inactive
       ? "There is no measurable current price volatility."
@@ -554,7 +569,7 @@ export function adaptiveProfile(s, settings = {}) {
           : !affordable
             ? "Spread is too large relative to M1 ATR."
             : "M1 and M5 trend and momentum agree, and spread is within the mode's ATR limit.";
-  let effectiveRiskPct = Math.min(configuredRisk, 0.5);
+  let effectiveRiskPct = Math.min(configuredRisk, 0.25);
   if (high) effectiveRiskPct *= 0.5;
   if (range || !aligned) effectiveRiskPct *= 0.5;
   if (low) effectiveRiskPct *= 0.75;
@@ -576,6 +591,7 @@ export function adaptiveProfile(s, settings = {}) {
     regime,
     effectiveRiskPct,
     scalpingEligible,
+    scalpingHistoryReady,
     scalpingSide: scalpingEligible
       ? direction === "up"
         ? "BUY"

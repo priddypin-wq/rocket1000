@@ -24,7 +24,7 @@
     "better-sqlite3": "13.0.3",
     "fflate": "0.8.3",
     "next": "16.4.2",
-    "openai": "7.34.0",
+    "openai": "7.43.0",
     "pg": "8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -46,5 +46,8 @@
   "allowScripts": {
     "better-sqlite3@13.0.3": true,
     "unrs-resolver@1.12.2": true
+  },
+  "overrides": {
+    "zod": "4.6.7"
   }
 }

@@ -6,7 +6,7 @@ export default function Page() {
   return (
     <AppShell
       title="Settings"
-      subtitle="Your key. Your account. Your control."
+      subtitle="Verified account. Protected execution."
       active="Settings"
     >
       <OpenAiConnection />

@@ -10,11 +10,17 @@ import { zipSync, strToU8 } from "fflate";
 import { validateSnapshot } from "./market.mjs";
 import { ApiError } from "./errors.mjs";
 import { personalizedEaSource } from "./ea-source.mjs";
+import { pauseActivation } from "./engine-activation.mjs";
+import {
+  sealEaCredential,
+  unsealEaCredential,
+} from "./ea-credential-vault.mjs";
 import { freezeCommandAccounts } from "./trade-settings.mjs";
 import { accountKey } from "./trade-settings.mjs";
 import { synchronizeOwnedBrokerState } from "./orders-dashboard.mjs";
 import {
   disableTrading,
+  pauseForReconnect,
   revokeLiveActivation,
   executionExchange,
   tradingService,
@@ -85,6 +91,7 @@ export function provisioningService(
     now = Date.now,
     artifact = compiledArtifact,
     origin = () => backendOrigin(),
+    env = process.env,
   } = {},
 ) {
   const audit = (tx, uid, cid, event) =>
@@ -133,9 +140,15 @@ export function provisioningService(
       return { id };
     });
   }
-  async function download(uid, cid, { format = "package" } = {}) {
+  async function download(
+    uid,
+    cid,
+    { format = "package", replaceCredential = false } = {},
+  ) {
     if (!["package", "source"].includes(format))
       throw new ApiError(400, "Unsupported EA download format.");
+    if (typeof replaceCredential !== "boolean")
+      throw new ApiError(400, "Invalid installation replacement choice.");
     // Check ownership before reading any artifact or issuing credentials.
     await owned(db, uid, cid);
     const [workspace] = await db.query(
@@ -144,36 +157,62 @@ export function provisioningService(
     );
     const url = origin();
     const { binary, manifest, source } = await artifact();
-    const id = randomUUID();
-    const token = `r1000.${id}.${randomBytes(32).toString("base64url")}`;
     const createdAt = now();
-    const expiresAt = Math.min(createdAt + ttl, Number(workspace.expires_at));
-    if (expiresAt <= createdAt)
-      throw new ApiError(401, "Private browser session expired");
-    const config = `version=1\nbackend_url=${url}\ninstallation_id=${id}\ncredential=${token}\nexpires_at=${Math.floor(expiresAt / 1000)}\n`;
-    const readme = `ROCKET1000 EA - personalized installation\n\n1. Keep this ZIP private: its config grants telemetry access to ONE installation.\n2. In MT5 choose File > Open Data Folder. Close/remove an older ROCKET1000 EA on all charts first.\n3. Copy MQL5 from this package into that data folder, merging its subfolders.\n   EA: MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5\n   Config: MQL5/Files/ROCKET1000/rocket1000.config\n   The files must stay in those locations; the EA loads the config automatically.\n4. Tools > Options > Expert Advisors: allow WebRequest for this exact address:\n   ${url}\n   This is an MT5 security permission, not an EA input or credential. Never disable TLS checks.\n5. Refresh Navigator and attach ROCKET1000 EA to ONE chart in the authorized account.\n   No token, URL, password or DLL input is needed. No dashboard account or email login is required. Algo Trading can remain OFF.\n6. Return to the dashboard and wait for verification.\n\nThe EA verifies the MT5 account, broker server and Demo/Live type. Switching accounts re-registers the new identity, stops automation and cancels old queued orders. Start again only after reviewing the new account.\nEach new download replaces this connection's previous credential. Reinstall the replacement config after rotation.\nCredential expires: ${new Date(expiresAt).toISOString()}\nOrders are DISABLED by default. Account & settings offers Start AI trading after broker and risk checks pass. The current AI engine must complete genuine Demo OPEN, MODIFY and full CLOSE validation before Live confirmation is available. Confirm each exact Live account before its first real-money order. Reconnection never enables trading.\nThe terminal must be logged into its broker to register.\nUse a separate MT5 data folder/terminal for each concurrent connection.\nThis package does not contain MT5 passwords, OpenAI keys, or dashboard session secrets.\nBuild source SHA-256: ${manifest.sourceSha256}\n`;
-    const archive =
-      format === "source"
-        ? strToU8(
-            personalizedEaSource({
-              source,
-              serverUrl: url,
-              installationId: id,
-              credential: token,
-              expiresAt,
-            }),
-          )
-        : zipSync(
-            {
-              "MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5": binary,
-              "MQL5/Files/ROCKET1000/rocket1000.config": strToU8(config),
-              "INSTALL.txt": strToU8(readme),
-            },
-            { level: 6 },
-          );
-    // Commit only after the package is fully assembled. Failed generation cannot revoke a working EA.
-    await db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
       await owned(tx, uid, cid, true);
+      const [previous] = await tx.query(
+        "SELECT i.*,v.sealed FROM rocket_direct_installations i LEFT JOIN rocket_ea_download_credentials v ON v.installation_id=i.id WHERE i.connection_id=? AND i.revoked_at IS NULL AND i.expires_at>? ORDER BY i.created_at DESC LIMIT 1",
+        [cid, createdAt],
+      );
+      if (previous && !previous.sealed && !replaceCredential)
+        throw new ApiError(
+          409,
+          "Your existing EA credential is still active and has not been replaced. Reconnect that installation once to preserve it, or explicitly review replacing the EA installation.",
+          "EA_ROTATION_REVIEW_REQUIRED",
+        );
+      const reuse = !!previous?.sealed && !replaceCredential;
+      const id = reuse ? previous.id : randomUUID();
+      const token = reuse
+        ? unsealEaCredential(previous.sealed, uid, cid, id, env)
+        : `r1000.${id}.${randomBytes(32).toString("base64url")}`;
+      if (reuse && sha(token) !== previous.token_hash)
+        throw new ApiError(
+          503,
+          "Stored EA download integrity check failed. No credential was changed.",
+          "EA_CREDENTIAL_STORAGE_UNAVAILABLE",
+        );
+      const expiresAt = reuse
+        ? Number(previous.expires_at)
+        : Math.min(createdAt + ttl, Number(workspace.expires_at));
+      if (expiresAt <= createdAt)
+        throw new ApiError(401, "Private browser session expired");
+      const config = `version=1\nbackend_url=${url}\ninstallation_id=${id}\ncredential=${token}\nexpires_at=${Math.floor(expiresAt / 1000)}\n`;
+      const readme = `ROCKET1000 EA - personalized installation\n\n1. Keep this ZIP private: its config grants telemetry access to ONE installation.\n2. In MT5 choose File > Open Data Folder. Close/remove an older ROCKET1000 EA on all charts first.\n3. Copy MQL5 from this package into that data folder, merging its subfolders.\n   EA: MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5\n   Config: MQL5/Files/ROCKET1000/rocket1000.config\n   The files must stay in those locations; the EA loads the config automatically.\n4. Tools > Options > Expert Advisors: allow WebRequest for this exact address:\n   ${url}\n   This is an MT5 security permission, not an EA input or credential. Never disable TLS checks.\n5. Refresh Navigator and attach ROCKET1000 EA to ONE chart in the authorized account.\n   No token, URL, password or DLL input is needed. No dashboard account or email login is required. Algo Trading can remain OFF.\n6. Return to the dashboard and wait for verification.\n\nThe EA verifies the MT5 account, broker server and Demo/Live type. Switching accounts re-registers the new identity, stops automation and cancels old queued orders. Start again only after reviewing the new account.\nRepeated downloads preserve the active credential. Revoke EA access explicitly before replacing a lost installation.\nCredential expires: ${new Date(expiresAt).toISOString()}\nOrders are DISABLED by default. Account & settings offers Start AI trading after broker and risk checks pass. START AI verifies the real OpenAI connection and binds execution to the authenticated broker account. Demo and Live use the same workflow. A temporary reconnect may resume an already-enabled session for the same account and terminal; STOP and Emergency Stop never resume automatically.\nThe terminal must be logged into its broker to register.\nUse a separate MT5 data folder/terminal for each concurrent connection.\nThis package does not contain MT5 passwords, OpenAI keys, or dashboard session secrets.\nBuild source SHA-256: ${manifest.sourceSha256}\n`;
+      const archive =
+        format === "source"
+          ? strToU8(
+              personalizedEaSource({
+                source,
+                serverUrl: url,
+                installationId: id,
+                credential: token,
+                expiresAt,
+              }),
+            )
+          : zipSync(
+              {
+                "MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5": binary,
+                "MQL5/Files/ROCKET1000/rocket1000.config": strToU8(config),
+                "INSTALL.txt": strToU8(readme),
+              },
+              { level: 6 },
+            );
+      // Commit only after the package is fully assembled. Failed generation cannot revoke a working EA.
+      if (reuse) {
+        await audit(tx, uid, cid, "ea_download_existing_credential_preserved");
+        return archive;
+      }
+      const sealed = sealEaCredential(token, uid, cid, id, env);
       await disableTrading(tx, cid, createdAt);
       await tx.query(
         "UPDATE rocket_direct_installations SET revoked_at=? WHERE connection_id=? AND revoked_at IS NULL",
@@ -188,8 +227,12 @@ export function provisioningService(
         [id, cid, sha(token), createdAt, expiresAt],
       );
       await audit(tx, uid, cid, "credential_issued_previous_revoked");
+      await tx.query(
+        "INSERT INTO rocket_ea_download_credentials(installation_id,sealed) VALUES(?,?)",
+        [id, sealed],
+      );
+      return archive;
     });
-    return archive;
   }
   function publicInstallation(i) {
     if (!i) return null;
@@ -283,6 +326,11 @@ export function provisioningService(
           ["cancelled", now(), c.id, "analyzing"],
         );
       for (const c of rows) {
+        await pauseActivation(tx, c.id, "Emergency Stop activated.");
+        await tx.query(
+          "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='Emergency Stop activated.' WHERE connection_id=?",
+          [randomUUID(), c.id],
+        );
         await disableTrading(tx, c.id, now());
         await audit(
           tx,
@@ -360,6 +408,14 @@ export function provisioningService(
         if (input.eaProtocol === 4 && register && input.brokerConnected) {
           await freezeCommandAccounts(tx, i.connection_id);
           await disableTrading(tx, i.connection_id, now());
+          await tx.query(
+            "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='MT5 account changed; waiting for automatic verification.' WHERE connection_id=?",
+            [randomUUID(), i.connection_id],
+          );
+          await tx.query(
+            "UPDATE rocket_engine_activation SET generation=?,lease_until=0,next_attempt=0,reason=CASE WHEN paused=1 THEN reason ELSE 'Verifying the newly connected broker account.' END WHERE connection_id=?",
+            [randomUUID(), i.connection_id],
+          );
           await revokeLiveActivation(tx, i.user_id, now());
           await tx.query(
             "DELETE FROM rocket_market_snapshots WHERE connection_id=?",
@@ -377,7 +433,7 @@ export function provisioningService(
             [now(), i.connection_id],
           );
           await tx.query(
-            "UPDATE rocket_direct_connections SET expected_login=?,expected_server=?,expected_type=?,stopped=1 WHERE id=?",
+            "UPDATE rocket_direct_connections SET expected_login=?,expected_server=?,expected_type=? WHERE id=?",
             [
               input.accountLogin,
               input.brokerServer,
@@ -412,7 +468,7 @@ export function provisioningService(
         }
       }
       if (!input.brokerConnected) {
-        await disableTrading(tx, i.connection_id, now());
+        await pauseForReconnect(tx, i.connection_id, now());
         await tx.query(
           "UPDATE rocket_direct_installations SET last_heartbeat=NULL,last_error=NULL,last_error_at=NULL WHERE id=?",
           [id],
@@ -537,6 +593,31 @@ export function provisioningService(
         ...options,
       });
       await synchronizeOwnedBrokerState(tx, i, input, now());
+      // A legacy installation stored only a hash. A genuinely authenticated
+      // heartbeat can backfill its own token into the scoped encrypted vault;
+      // never rotate an existing valid credential merely to enable downloads.
+      const [vault] = await tx.query(
+        "SELECT installation_id FROM rocket_ea_download_credentials WHERE installation_id=?",
+        [id],
+      );
+      if (!vault) {
+        let sealed;
+        try {
+          sealed = sealEaCredential(token, i.user_id, i.connection_id, id, env);
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "EA_CREDENTIAL_STORAGE_UNAVAILABLE"
+          )
+            throw error;
+          // Storage configuration must not invalidate a legitimate installed EA.
+        }
+        if (sealed)
+          await tx.query(
+            "INSERT INTO rocket_ea_download_credentials(installation_id,sealed) VALUES(?,?) ON CONFLICT(installation_id) DO NOTHING",
+            [id, sealed],
+          );
+      }
       return {
         ok: true,
         installationId: id,

@@ -49,6 +49,10 @@ function context(side = "BUY") {
     pendingOrders: 0,
     tradeAllowed: true,
     stopsVerified: true,
+    costsVerified: true,
+    commissionPerLot: 0,
+    consecutiveLosses: 0,
+    consecutiveLossesVerified: true,
     newsVerified: true,
     newsBlocked: false,
   };
@@ -79,22 +83,11 @@ function entry(side = "BUY") {
 }
 
 for (const side of ["BUY", "SELL"])
-  test(`${side}: bounded hedging addition is allowed only after all existing entries win and are protected at break-even`, () => {
+  test(`${side}: the one-position hard policy blocks additions even to a protected winner`, () => {
     const ctx = context(side);
-    assert.equal(winningAdditionAllowed(ctx, side), true);
-    const approved = orderRisk(ctx, entry(side));
-    assert.ok(approved.volume > 0);
-    assert.ok(approved.riskPercent <= 1);
-    assert.ok(
-      approved.riskAmount <=
-        Math.min(ctx.market.balance, ctx.market.equity) * 0.01 + 1e-8,
-    );
-    const second = { ...ctx.market.positions[0], ticket: "2", identifier: "2" };
-    ctx.market.positions.push(second);
-    assert.equal(winningAdditionAllowed(ctx, side), true);
-    ctx.market.positions.push({ ...second, ticket: "3", identifier: "3" });
+    assert.equal(ctx.settings.maxPositions, 1);
     assert.equal(winningAdditionAllowed(ctx, side), false);
-    assert.throws(() => orderRisk(ctx, entry(side)), /hedging account/);
+    assert.throws(() => orderRisk(ctx, entry(side)), /position|hedging/i);
   });
 
 for (const [name, mutate] of [
@@ -138,12 +131,15 @@ for (const [name, mutate] of [
     assert.equal(winningAdditionAllowed(ctx, "BUY"), false);
   });
 
-test("winning additions retain the independent aggregate risk limit and skip broker minimum lots that exceed risk", () => {
+test("first entries enforce quarter-percent aggregate risk and never round a minimum lot up", () => {
   const ctx = context();
+  ctx.market.positions = [];
   ctx.execution.existingRisk =
-    Math.min(ctx.market.balance, ctx.market.equity) * 0.0299;
-  assert.equal(winningAdditionAllowed(ctx, "BUY"), true);
-  assert.throws(() => orderRisk(ctx, entry()), /Aggregate exposure/);
+    Math.min(ctx.market.balance, ctx.market.equity) * 0.00249;
+  assert.throws(
+    () => orderRisk(ctx, entry()),
+    /Minimum lot exceeds risk budget/,
+  );
   ctx.execution.existingRisk = 0;
   ctx.execution.minVolume = 100;
   ctx.execution.maxVolume = 100;
@@ -153,6 +149,7 @@ test("winning additions retain the independent aggregate risk limit and skip bro
     /Minimum lot exceeds risk/,
   );
 });
+
 test("first entries on netting accounts remain possible; the exception never authorizes a trade by itself", () => {
   const ctx = context();
   ctx.execution.accountMarginMode = 0;
@@ -197,8 +194,8 @@ test("entry loss and position-count limits do not prevent an authorized risk-red
   const ctx = context(),
     p = ctx.market.positions[0];
   ctx.enabled = false;
-  ctx.blockers = ["Daily loss limit reached.", "Maximum 3 open positions."];
-  ctx.execution.dailyLoss = ctx.execution.dayStartEquity * 0.05;
+  ctx.blockers = ["Daily loss limit reached.", "Maximum 1 open position."];
+  ctx.execution.dailyLoss = ctx.execution.dayStartEquity * 0.01;
   assert.equal(
     orderRisk(ctx, { kind: "CLOSE", position: p.ticket }).kind,
     "CLOSE",

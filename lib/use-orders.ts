@@ -11,6 +11,13 @@ export type VerifiedAccount = {
   currency: string | null;
   brokerName: string | null;
   dailyProfitLoss: number | null;
+  margin?: number | null;
+  freeMargin?: number | null;
+  marginLevel?: number | null;
+  floatingProfit?: number | null;
+  positionsCount?: number | null;
+  ordersCount?: number | null;
+  tradingAllowed?: boolean;
 };
 export type ManagedPosition = {
   symbol: string;
@@ -68,6 +75,8 @@ export type OrderDashboard = {
     id: string;
     symbol: string;
     decision: "BUY" | "SELL" | "WAIT";
+    aiDecision?: "BUY" | "SELL" | "WAIT" | "HOLD" | "CLOSE";
+    entryConditions?: string[];
     strategy: string;
     reasoning: string;
     analyzedAt: number;

@@ -13,10 +13,7 @@ import { MODEL } from "../server/ai-analysis.mjs";
 import { adaptiveProfile } from "../server/market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { enqueueCommand, tradeContext } from "../server/trading.mjs";
-import {
-  validateTradeSettings,
-  accountKey,
-} from "../server/trade-settings.mjs";
+import { validateTradeSettings } from "../server/trade-settings.mjs";
 const execution = {
   engineVersion: ENGINE_VERSION,
   tickSize: 0.01,
@@ -35,6 +32,10 @@ const execution = {
   pendingOrders: 0,
   tradeAllowed: true,
   stopsVerified: true,
+  costsVerified: true,
+  commissionPerLot: 0,
+  consecutiveLosses: 0,
+  consecutiveLossesVerified: true,
   newsVerified: true,
   newsBlocked: false,
   terminalId: "0123456789abcdef01234567",
@@ -231,10 +232,10 @@ test("Demo automation uses the real broker command path for OPEN, tighten-SL MOD
     );
     assert.ok(
       c.riskAmount <=
-        Math.min(f.input().market.balance, f.input().market.equity) * 0.005 +
+        Math.min(f.input().market.balance, f.input().market.equity) * 0.0025 +
           1e-8,
     );
-    assert.equal(c.riskPerTradePct, 0.5);
+    assert.equal(c.riskPerTradePct, 0.25);
     await f.authorize(c);
     let p = position(c);
     f.snapshot({ positions: [p] });
@@ -275,34 +276,22 @@ test("Demo automation uses the real broker command path for OPEN, tighten-SL MOD
     await f.db.close();
   }
 });
-test("Live automation cannot start without explicit consent for the exact login AND broker", async () => {
+test("Live uses the same bound AI session without legacy approval dialogs, and a broker switch requires a new START", async () => {
   const f = await setup("live");
   try {
-    await fixtureDemoAcceptance(f);
-    await assert.rejects(f.start(), /explicit confirmation/);
+    await f.start();
+    assert.equal((await f.status()).permissionActive, true);
+    assert.equal((await f.status()).demoValidation.passed, false);
     await assert.rejects(
-      f.trade.act("alice", {
-        action: "confirm-live",
-        accountKey: accountKey("wrong", "Broker-Live", "live"),
-        confirmation: "ENABLE LIVE 12345678",
-      }),
+      f.trade.act("alice", { action: "prepare-live" }),
+      (e) => e.code === "UNIFIED_AI_CONTROL",
     );
-    await f.consent();
-    await f.start();
-    assert.equal((await f.status()).automation.state, "running");
     await f.switchAccount({ brokerServer: "Different-Live" });
-    assert.equal((await f.status()).liveConfirmed, false);
-    assert.equal((await f.status()).automation.state, "stopped");
-    await assert.rejects(f.start(), /explicit confirmation/);
-    await f.switchAccount({ accountType: "demo", brokerServer: "Broker-Demo" });
-    assert.equal((await f.status()).liveConfirmed, false);
+    assert.equal((await f.status()).permissionActive, false);
+    await assert.rejects(f.start(), /START AI/);
+    await seedAnalysisEngineFixture(f);
     await f.start();
-    await f.switchAccount({ accountType: "live", brokerServer: "Broker-Live" });
-    assert.equal((await f.status()).liveConfirmed, false);
-    assert.equal((await f.status()).automation.state, "stopped");
-    await assert.rejects(f.start(), /explicit confirmation/);
-    await f.consent();
-    assert.equal((await f.status()).liveConfirmed, true);
+    assert.equal((await f.status()).permissionActive, true);
   } finally {
     await f.db.close();
   }
@@ -326,7 +315,7 @@ test("switching Demo to Live stops the run and rejects an old claimed command ev
     assert.equal(state.liveConfirmed, false);
     assert.equal(state.orders.length, 0);
     await fixtureDemoAcceptance(f);
-    await approveFixtureLive(f.trade);
+    await seedAnalysisEngineFixture(f);
     await f.trade.act("alice", {
       action: "start-auto",
       confirmation: "ENABLE DEMO 12345678",
@@ -434,7 +423,10 @@ for (const method of [
       release();
       await run;
       assert.equal((await f.status()).orders.length, 0);
-      assert.equal((await f.status()).automation.state, "stopped");
+      assert.equal(
+        (await f.status()).automation.state,
+        method === "reconnect" ? "running" : "stopped",
+      );
     } finally {
       release();
       await f.db.close();
@@ -592,13 +584,13 @@ test("manual Live permission rejects approval for the same login at a different 
     );
     assert.equal((await f.status()).liveConfirmed, false);
     const current = await f.status();
-    await approveFixtureLive(f.trade);
+    await seedAnalysisEngineFixture(f);
     await f.trade.act("alice", {
       action: "enable",
       confirmation: "ENABLE LIVE 12345678",
       accountKey: current.accountKey,
     });
-    assert.equal((await f.status()).liveConfirmed, true);
+    assert.equal((await f.status()).permissionActive, true);
   } finally {
     await f.db.close();
   }

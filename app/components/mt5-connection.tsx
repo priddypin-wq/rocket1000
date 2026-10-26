@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mt5Api } from "../../lib/mt5-client";
 import { brokerNumber, useOrders } from "../../lib/use-orders";
@@ -30,6 +30,14 @@ export default function Mt5Connection() {
   const [networkError, setNetworkError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
+  const [replacementFormat, setReplacementFormat] = useState<
+    "package" | "source" | null
+  >(null);
+  const replacementDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (replacementFormat) replacementDialog.current?.showModal();
+    else replacementDialog.current?.close();
+  }, [replacementFormat]);
   useEffect(() => {
     let active = true;
     let pending = false;
@@ -110,7 +118,10 @@ export default function Mt5Connection() {
       );
     }
   }
-  async function download() {
+  async function download(
+    format: "package" | "source" = "package",
+    replaceCredential = false,
+  ) {
     if (!state) return;
     setBusy("download");
     setError("");
@@ -118,22 +129,31 @@ export default function Mt5Connection() {
       const generated = await (await mt5Api("generate", {})).json();
       const response = await mt5Api("download", {
         connectionId: generated.connectionId,
-        format: "package",
+        format,
+        ...(replaceCredential ? { replaceCredential: true } : {}),
       });
       const url = URL.createObjectURL(await response.blob());
       const a = document.createElement("a");
       a.href = url;
-      a.download = "ROCKET1000_EA.zip";
+      a.download = `ROCKET1000_EA.${format === "source" ? "mq5" : "zip"}`;
       document.body.append(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
       await refresh();
+      setReplacementFormat(null);
       setNotice(
-        "Your verified compiled EA and private configuration are in ROCKET1000_EA.zip. Extract it and copy its MQL5 folder into your MT5 data folder.",
+        format === "source"
+          ? "Your private preconfigured ROCKET1000_EA.mq5 is downloaded. Open it in MetaEditor, save it in your MT5 MQL5/Experts/ROCKET1000 folder and compile. This source includes its connection configuration."
+          : "Your verified compiled EA and private configuration are in ROCKET1000_EA.zip. Extract it and copy its MQL5 folder into your MT5 data folder.",
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
+      if (
+        e instanceof Error &&
+        (e as Error & { code?: string }).code === "EA_ROTATION_REVIEW_REQUIRED"
+      )
+        setReplacementFormat(format);
     } finally {
       setBusy("");
     }
@@ -194,6 +214,35 @@ export default function Mt5Connection() {
           ZIP contains the actual compiled .ex5, personalized configuration and
           instructions. Download is available only after build verification.
         </p>
+        <details className="settings-inline-details">
+          <summary>Connection repair & MetaEditor source</summary>
+          <p>
+            If MT5 reports a missing configuration, reinstall both folders from
+            the compiled package, or download the self-contained MetaEditor
+            source below. Keep either download private.
+          </p>
+          <button
+            className="action-outline"
+            disabled={!state?.downloadReady || !!busy || !!networkError}
+            onClick={() => void download("source")}
+          >
+            Download MetaEditor source (.mq5)
+          </button>
+          <p className="inner-caption">
+            Open the downloaded file in MetaEditor and compile it. Automatic
+            opening depends on the file association configured on your computer.
+            No manual URL or token entry is required.
+          </p>
+          {c?.installation && !c.installation.revokedAt ? (
+            <button
+              className="inner-text-button"
+              disabled={!!busy}
+              onClick={() => setReplacementFormat("package")}
+            >
+              Replace EA installation…
+            </button>
+          ) : null}
+        </details>
         <div className="inner-error" role="alert">
           {networkError || error || state?.provisioningError}
         </div>
@@ -237,6 +286,19 @@ export default function Mt5Connection() {
               ? new Date(c.installation.lastHeartbeat).toLocaleString()
               : "Never",
           ],
+          ["Margin", brokerNumber(verifiedAccount?.margin, 2)],
+          ["Free margin", brokerNumber(verifiedAccount?.freeMargin, 2)],
+          ["Floating P/L", brokerNumber(verifiedAccount?.floatingProfit, 2)],
+          [
+            "Broker positions / orders",
+            `${verifiedAccount?.positionsCount ?? "—"} / ${verifiedAccount?.ordersCount ?? "—"}`,
+          ],
+          [
+            "Broker / EA permissions",
+            verifiedAccount?.tradingAllowed
+              ? "Enabled"
+              : "Not verified / disabled",
+          ],
           [
             "HTTPS verified",
             state?.verifiedAt
@@ -271,17 +333,21 @@ export default function Mt5Connection() {
             type and reports the exact broker symbol automatically.
           </li>
           <li>
-            Wait for verification, set your risk limits in Settings and enable
-            this EA&#39;s Algo Trading permission. Save and test your OpenAI key
-            in Settings, then press START AI on Home for analysis. Broker
-            execution requires separate account authorization in Settings.
+            Wait for account verification and enable this EA&#39;s Algo Trading
+            permission. Save and test your OpenAI key in Settings, then press
+            Start Auto Trading on Home. The same workflow applies to Demo and
+            Live; every order still needs a valid OpenAI decision and
+            independent risk approval.
           </li>
         </ol>
         <p className="inner-caption">
-          No email or token entry. This browser owns the connection. A new
-          download replaces the old token. Switching Demo or Live accounts
-          verifies the new broker account and stops automation until you start
-          again.
+          No email or token entry. This browser owns the connection. Repeat
+          downloads preserve the working EA credential. Revoking an installation
+          requires a new personalized download. Switching Demo or Live accounts
+          invalidates old commands and verifies the new broker identity before
+          an explicitly enabled session may resume. A temporary reconnect must
+          verify the account and terminal again. Stop Auto Trading and Emergency
+          Stop stay OFF until you explicitly restart.
         </p>
         <button
           className="action-outline"
@@ -301,6 +367,45 @@ export default function Mt5Connection() {
         </button>
       </section>
       <ConnectedSymbols data={orders.data} error={orders.error} />
+      <dialog
+        ref={replacementDialog}
+        className="live-activation-dialog"
+        aria-labelledby="replace-ea-title"
+        aria-describedby="replace-ea-description"
+        onCancel={() => setReplacementFormat(null)}
+        onClose={() => setReplacementFormat(null)}
+      >
+        <h2 id="replace-ea-title">Replace this EA installation?</h2>
+        <p id="replace-ea-description">
+          This creates a new private EA credential and disables the previous
+          installation. Any old EA will stop authenticating. Install the new
+          download in MT5 before restarting AI.
+        </p>
+        <p>
+          Your backend address stays the same. Existing broker positions remain
+          open; this action does not close trades.
+        </p>
+        <div className="engine-actions">
+          <button
+            className="action-outline"
+            disabled={!!busy}
+            onClick={() => setReplacementFormat(null)}
+          >
+            Cancel
+          </button>
+          <button
+            className="action-red"
+            disabled={!!busy || !replacementFormat}
+            onClick={() => {
+              if (replacementFormat) void download(replacementFormat, true);
+            }}
+          >
+            {busy === "download"
+              ? "Preparing replacement…"
+              : "Replace & download"}
+          </button>
+        </div>
+      </dialog>
       <section className="inner-card">
         <div className="inner-card-title">
           <span>ANALYSIS & BROKER ORDERS</span>

@@ -4,7 +4,12 @@ import { randomUUID } from "node:crypto";
 import { automationService } from "../server/automation.mjs";
 import { tradingService } from "../server/trading.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
-import { fixture, market, terminal } from "./helpers.mjs";
+import {
+  fixture,
+  market,
+  terminal,
+  seedAnalysisEngineFixture,
+} from "./helpers.mjs";
 
 // In-memory upgrade regression only; never invokes AI or a broker.
 test("a running engine stops and cancels queued orders when the EA reports an older engine", async () => {
@@ -29,6 +34,10 @@ test("a running engine stops and cancels queued orders when the EA reports an ol
     pendingOrders: 0,
     tradeAllowed: true,
     stopsVerified: true,
+    costsVerified: true,
+    commissionPerLot: 0,
+    consecutiveLosses: 0,
+    consecutiveLossesVerified: true,
     newsVerified: true,
     newsBlocked: false,
     terminalId: "0123456789abcdef01234567",
@@ -43,6 +52,7 @@ test("a running engine stops and cancels queued orders when the EA reports an ol
   });
   try {
     await f.service.telemetry(f.token, telemetry(ENGINE_VERSION), true);
+    await seedAnalysisEngineFixture(f);
     const trading = tradingService(f.db, { now: f.now });
     await trading.act("alice", {
       action: "start-auto",
@@ -79,7 +89,7 @@ test("a running engine stops and cancels queued orders when the EA reports an ol
     assert.equal(status.permissionActive, false);
     assert.equal(status.enabled, false);
     assert.equal(status.automation.state, "stopped");
-    assert.match(status.automation.lastError, /EA 5\.00.*current engine/);
+    assert.match(status.automation.lastError, /EA 6\.00.*current engine/);
     assert.equal(
       (
         await f.db.query(
