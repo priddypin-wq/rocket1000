@@ -1,6 +1,6 @@
 # ROCKET1000
 
-Existing Next.js dashboard and MQL5 EA upgraded on `codex/professional-auto-trading-upgrade`. The original dark-purple/pink design, Deadpool assistant, private browser ownership and existing HTTPS MT5 connection are preserved. **This review upgrade is not deployed or production-qualified.** The previously approved release remains at https://rocket1000.vercel.app.
+Existing Next.js dashboard and MQL5 EA upgraded on `codex/professional-auto-trading-upgrade`. The original dark-purple/pink design, Deadpool assistant, private browser ownership and existing HTTPS MT5 connection are preserved. **Approved source commit `4386d65` is deployed at https://rocket1000.vercel.app with Auto Trading OFF.** Genuine broker execution is not yet production-qualified. See the [27 October deployment record](DEPLOYMENT-2026-10-27.md) for actual production checks and the OpenAI billing blocker.
 
 ## Account and execution workflow
 

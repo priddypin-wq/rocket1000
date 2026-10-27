@@ -1,12 +1,14 @@
 # ROCKET1000 unified upgrade verification
 
+**Deployment update — 27 October 2026:** Approved source commit `4386d65` is now deployed at https://rocket1000.vercel.app with Auto Trading OFF. Staged and public production checks passed; the real OpenAI diagnostic still reports `AI_BILLING_REQUIRED`. See [the deployment record](DEPLOYMENT-2026-10-27.md). The review results below retain their predeployment context; genuine Demo order execution remains unverified.
+
 Date: 26 October 2026 (Africa/Johannesburg). Repository: priddypin-wq/rocket1000. Branch: codex/professional-auto-trading-upgrade. Review: https://github.com/priddypin-wq/rocket1000/pull/4.
 
 ## Delivery boundary
 
-The existing Next.js application, MQL5 source, routes, credential provisioning, AI integration, risk engine, worker and broker reconciliation were inspected and upgraded in place. The original ROCKET1000 branding, Deadpool, private browser ownership and HTTPS MT5 origin remain. This upgrade is not deployed, not merged and not claimed production-ready. No Live development trades or production execution were activated.
+The existing Next.js application, MQL5 source, routes, credential provisioning, AI integration, risk engine, worker and broker reconciliation were inspected and upgraded in place. The original ROCKET1000 branding, Deadpool, private browser ownership and HTTPS MT5 origin remain. The owner-approved source is now deployed with trading OFF; this PR remains unmerged and genuine broker acceptance is still required. No Live development trades or production execution were activated.
 
-The previously approved engine 5 release remains at https://rocket1000.vercel.app. On 25 October the actual installed generic EA had no personalized configuration in its exact terminal Files folder. Installing the authenticated production package's configuration repaired its real connection without changing the backend origin or binary. The private production source also compiled successfully. That historical engine 5 authentication check is distinct from the new engine 6 acceptance work.
+The previously approved engine 5 release is the prior rollback target; engine 6 now serves https://rocket1000.vercel.app. On 25 October the actual installed generic EA had no personalized configuration in its exact terminal Files folder. Installing the authenticated production package's configuration repaired its real connection without changing the backend origin or binary. The private production source also compiled successfully. That historical engine 5 authentication check is distinct from the new engine 6 acceptance work.
 
 ## Implemented behavior
 
@@ -48,7 +50,7 @@ The dependency update pinned transitive Zod to patched 4.6.7 after the initial a
 
 ## Remaining acceptance and operator requirements
 
-1. Approve and release the matching backend and EA 6 as one reviewed change, preserving the existing project/origin/database/credentials. Do not install the new EA against the older deployed engine. This task has not deployed or activated production.
+1. The matching backend and EA 6 download were approved and deployed on 27 October, preserving the existing project/origin/database/credentials. Install that matching EA on the terminal for genuine Demo acceptance. Trading remains OFF; deployment did not attach an EA or authorize broker execution.
 2. Verify funded OpenAI access and the configured model through the backend's real Test Connection. Keys/payment details stay in the provider/hosting settings. A successful fixed connection test does not itself prove a valid trade decision.
 3. Connect an authorized Demo terminal with fresh data and suitable risk conditions, then explicitly enable Auto Trading for the acceptance test. Observe real AI → approved command → EA → broker OPEN, protective management, CLOSE and final tickets/history. Do not bypass existing exposure, broker permissions, stale-data or loss limits merely to force a test.
 4. Complete historical tick/cost, out-of-sample, walk-forward and Demo-forward validation. Win rate, profit factor, expectancy, drawdown, reversal performance and execution quality are not fabricated or claimed verified.

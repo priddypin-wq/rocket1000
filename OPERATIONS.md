@@ -1,12 +1,12 @@
 # ROCKET1000 operator setup
 
-Do not put keys, database credentials or encryption secrets in GitHub or chat. The user-facing MT5 URL and protocol remain unchanged. The engine 5 release was deployed on 24 October 2026. The current engine 6 upgrade is an undeployed review build; genuine AI-to-broker execution remains an acceptance requirement.
+Do not put keys, database credentials or encryption secrets in GitHub or chat. The user-facing MT5 URL and protocol remain unchanged. The approved engine 6 source commit `4386d65` is now deployed with Auto Trading OFF. The engine 5 release from 24 October remains the prior rollback target. Genuine AI-to-broker execution remains an acceptance requirement. See [the 27 October release record](DEPLOYMENT-2026-10-27.md).
 
 ## Existing target and release boundary
 
-The owner-selected application is https://rocket1000.vercel.app, existing project `prj_oTLaK79PdNcNy8dpXiINtTiqlAsC` in workspace `sniper-fx`. Owner-approved Vercel CLI access verified and linked this exact project. Deployment `dpl_3tcegNyyEJaRogZigBWsWRYkVYt1` was staged, checked and promoted. Do not create a duplicate project or change its existing Git repository mapping merely to deploy.
+The owner-selected application is https://rocket1000.vercel.app, existing project `prj_oTLaK79PdNcNy8dpXiINtTiqlAsC` in workspace `sniper-fx`. Owner-approved Vercel CLI access verified and linked this exact project. Current deployment `dpl_FdQA68t7hJ5uhzGwwSqCyaAJ258n` was staged, checked and promoted on 27 October. Deployment `dpl_3tcegNyyEJaRogZigBWsWRYkVYt1` is the earlier rollback target. Do not create a duplicate project or change its existing Git repository mapping merely to deploy.
 
-The review branch explicitly disables automatic Vercel Git deployment; this release used the approved manual CLI flow. Production migration preserved old records and saved an authenticated encrypted logical rollback snapshot of 24 existing tables inside the same database before applying additive schema changes. That snapshot supplements provider backups; it is not an off-site disaster recovery copy. A separate encryption secret and Queue flag were added without replacing the OpenAI key, database, HTTPS URLs or active EA credentials. Live was not activated.
+The review branch explicitly disables automatic Vercel Git deployment; the approved releases used the manual CLI flow. Before the 27 October migration, an encrypted logical snapshot of 32 existing tables was saved inside the same database. The earlier release saved 24 tables and added the separate encryption secret and Queue flag. These snapshots are not off-site disaster recovery copies. The current release preserved the OpenAI key, database, HTTPS URLs and existing EA credentials, and persistently paused every existing connection. No broker orders or Live execution were activated.
 
 ## Web backend configuration
 

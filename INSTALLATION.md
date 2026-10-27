@@ -29,7 +29,7 @@ The same source and execution pipeline support Live. Do not place Live developme
 
 The private installation tools also provide a personalized `.mq5` with its restricted credential embedded. Keep it private, open it using MetaEditor, save under the intended Experts folder and press F7 to compile. A website cannot guarantee the laptop's `.mq5` file association or automatically attach an EA to a chart. The bundled compiled package is the primary installation method. Never put the private personalized source in GitHub.
 
-Updating requires the matching backend and EA engine version. Do not install this review's EA 6 against the older deployed engine 5 backend. Normal downloads preserve an active credential; a legacy installation without recoverable encrypted download material asks for explicit credential replacement rather than silently breaking the current terminal.
+Updating requires the matching backend and EA engine version. The approved engine 6 backend is now deployed with Auto Trading OFF; use its matching EA 6 download for the next Demo acceptance test. Normal downloads preserve an active credential; a legacy installation without recoverable encrypted download material asks for explicit credential replacement rather than silently breaking the current terminal. See [the deployment record](DEPLOYMENT-2026-10-27.md) for the current API billing blocker and checks still required.
 
 ## Android and desktop interface
 
