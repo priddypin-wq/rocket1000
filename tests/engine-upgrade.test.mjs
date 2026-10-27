@@ -89,7 +89,7 @@ test("a running engine stops and cancels queued orders when the EA reports an ol
     assert.equal(status.permissionActive, false);
     assert.equal(status.enabled, false);
     assert.equal(status.automation.state, "stopped");
-    assert.match(status.automation.lastError, /EA 6\.00.*current engine/);
+    assert.match(status.automation.lastError, /EA 7\.00.*current engine/);
     assert.equal(
       (
         await f.db.query(

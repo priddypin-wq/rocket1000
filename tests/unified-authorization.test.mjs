@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixture, market, terminal } from "./helpers.mjs";
+import { fixture, market, terminal, approveFixtureLive } from "./helpers.mjs";
 import { engineService } from "../server/engine-service.mjs";
 import { tradingService } from "../server/trading.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
@@ -120,6 +120,11 @@ async function setup(type = "demo", patch = {}, keyConnected = true) {
     calls: () => calls,
     start: async () => {
       await engine.heartbeat();
+      if (
+        identity.accountType === "live" &&
+        (await trade.status("alice")).connectionBlockers.length === 0
+      )
+        await approveFixtureLive(trade);
       return engine.start("alice");
     },
     switchAccount: async (next) => {
@@ -147,7 +152,10 @@ for (const type of ["demo", "live"]) {
         0,
         "No Demo-to-Live evidence is required by the unified workflow",
       );
-      assert.equal(await f.count("rocket_live_consents"), 0);
+      assert.equal(
+        await f.count("rocket_live_consents"),
+        type === "live" ? 1 : 0,
+      );
       assert.equal(
         await f.count("rocket_trade_commands"),
         0,
@@ -247,14 +255,39 @@ test("unavailable OpenAI billing prevents unified execution and leaves no comman
   }
 });
 
-test("obsolete approval screens/endpoints and legacy consent cannot independently authorize execution", async () => {
+test("returning to an approved Live account preserves its review without enabling either account automatically", async () => {
   const f = await setup("live");
   try {
-    for (const action of ["prepare-live", "confirm-live"])
-      await assert.rejects(
-        f.trade.act("alice", { action }),
-        /unified START AI/,
-      );
+    await f.start();
+    const approved = await f.trade.status("alice");
+    await f.switchAccount({
+      accountLogin: "22222222",
+      brokerServer: "Other-Live",
+    });
+    const other = await f.trade.status("alice");
+    assert.equal(other.liveConfirmed, false);
+    assert.equal(other.permissionActive, false);
+    await f.switchAccount({
+      accountLogin: terminal.accountLogin,
+      brokerServer: terminal.brokerServer,
+    });
+    const returned = await f.trade.status("alice");
+    assert.equal(returned.accountKey, approved.accountKey);
+    assert.equal(returned.liveConfirmed, true);
+    assert.equal(returned.permissionActive, false);
+    await f.engine.start("alice");
+    assert.equal((await f.trade.status("alice")).permissionActive, true);
+    await f.service.stop("alice");
+    assert.equal((await f.trade.status("alice")).liveConfirmed, false);
+    assert.equal(await f.count("rocket_trade_commands"), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("a legacy consent without the exact current-engine review cannot authorize execution", async () => {
+  const f = await setup("live");
+  try {
     const state = await f.trade.status("alice");
     await f.db.query(
       "INSERT INTO rocket_live_consents(user_id,account_key,account_login,broker_server,confirmed_at) VALUES(?,?,?,?,?)",
@@ -266,8 +299,21 @@ test("obsolete approval screens/endpoints and legacy consent cannot independentl
         f.now(),
       ],
     );
+    await f.engine.heartbeat();
+    await assert.rejects(
+      f.engine.start("alice"),
+      (e) => e.code === "LIVE_AUTHORIZATION_REQUIRED",
+    );
+    const review = await f.trade.act("alice", { action: "prepare-live" });
     assert.equal((await f.trade.status("alice")).permissionActive, false);
-    assert.equal(await f.count("rocket_trade_commands"), 0);
+    await f.trade.act("alice", {
+      action: "confirm-live",
+      id: review.id,
+      accountKey: review.accountKey,
+    });
+    assert.equal((await f.trade.status("alice")).permissionActive, false);
+    await f.engine.start("alice");
+    assert.equal((await f.trade.status("alice")).permissionActive, true);
   } finally {
     await f.db.close();
   }

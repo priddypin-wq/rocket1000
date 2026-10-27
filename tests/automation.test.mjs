@@ -276,26 +276,32 @@ test("Demo automation uses the real broker command path for OPEN, tighten-SL MOD
     await f.db.close();
   }
 });
-test("Live uses the same bound AI session without legacy approval dialogs, and a broker switch requires a new START", async () => {
+test("Live uses the shared engine only after exact account approval, and switching broker revokes it", async () => {
   const f = await setup("live");
   try {
+    await assert.rejects(
+      f.start(),
+      (e) => e.code === "LIVE_AUTHORIZATION_REQUIRED",
+    );
+    await f.consent();
     await f.start();
     assert.equal((await f.status()).permissionActive, true);
     assert.equal((await f.status()).demoValidation.passed, false);
-    await assert.rejects(
-      f.trade.act("alice", { action: "prepare-live" }),
-      (e) => e.code === "UNIFIED_AI_CONTROL",
-    );
     await f.switchAccount({ brokerServer: "Different-Live" });
     assert.equal((await f.status()).permissionActive, false);
-    await assert.rejects(f.start(), /START AI/);
     await seedAnalysisEngineFixture(f);
+    await assert.rejects(
+      f.start(),
+      (e) => e.code === "LIVE_AUTHORIZATION_REQUIRED",
+    );
+    await f.consent();
     await f.start();
     assert.equal((await f.status()).permissionActive, true);
   } finally {
     await f.db.close();
   }
 });
+
 test("switching Demo to Live stops the run and rejects an old claimed command even if the terminal reuses its old session nonce", async () => {
   const f = await setup();
   try {
@@ -316,6 +322,7 @@ test("switching Demo to Live stops the run and rejects an old claimed command ev
     assert.equal(state.orders.length, 0);
     await fixtureDemoAcceptance(f);
     await seedAnalysisEngineFixture(f);
+    await f.consent();
     await f.trade.act("alice", {
       action: "start-auto",
       confirmation: "ENABLE DEMO 12345678",
@@ -585,6 +592,14 @@ test("manual Live permission rejects approval for the same login at a different 
     assert.equal((await f.status()).liveConfirmed, false);
     const current = await f.status();
     await seedAnalysisEngineFixture(f);
+    await assert.rejects(
+      f.trade.act("alice", {
+        action: "enable",
+        accountKey: current.accountKey,
+      }),
+      (error) => error.code === "LIVE_AUTHORIZATION_REQUIRED",
+    );
+    await approveFixtureLive(f.trade);
     await f.trade.act("alice", {
       action: "enable",
       confirmation: "ENABLE LIVE 12345678",

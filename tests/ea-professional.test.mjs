@@ -10,7 +10,7 @@ test("native execution independently caps risk at a quarter percent and the unch
     new URL("../ea/ROCKET1000_EA.mq5", import.meta.url),
     "utf8",
   );
-  assert.match(source, /#property version\s+"6\.00"/);
+  assert.match(source, /#property version\s+"7\.00"/);
   assert.ok(source.includes(`!="${ENGINE_VERSION}"`));
   assert.match(source, /risk_pct<=0 \|\| risk_pct>0\.25 \|\|/);
   const onTick = source.split("void OnTick() {")[1].split("\n}")[0];

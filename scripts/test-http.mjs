@@ -153,17 +153,15 @@ try {
   passed(
     "order controls and EA authorization require their separate credentials",
   );
-  const settings = await (await request("/settings")).text();
-  assert.ok(settings.includes("OPENAI AI CONNECTION"));
-  assert.ok(!settings.includes("Save API Key"));
-  assert.ok(settings.includes("Test Connection"));
-  assert.ok(!settings.includes("Add AI Gateway credits"));
-  const passwordInput = settings.match(
-    /<input(?=[^>]*type="password")[^>]*>/,
-  )?.[0];
-  assert.equal(passwordInput, undefined);
+  const settings = await request("/settings");
+  const settingsHtml = await settings.text();
+  assert.ok(
+    settings.url.endsWith("/") ||
+      settings.url.endsWith("/#ai-configuration") ||
+      settingsHtml.includes("/#ai-configuration"),
+  );
   passed(
-    "OpenAI settings expose server-managed status and testing without a browser key field",
+    "the old Settings route opens the single private engine configuration drawer",
   );
   for (const path of ["/", "/dashboard", "/mt5", "/settings"]) {
     const screen = await (await request(path)).text();
@@ -172,15 +170,23 @@ try {
         screen,
       ),
     );
-    for (const label of ["Home", "Market", "MT5", "Settings"])
+    for (const label of ["Home", "Market", "MT5"])
       assert.ok(screen.includes(label));
+    const nav = screen.match(/<nav\b[^>]*>[\s\S]*?<\/nav>/)?.[0] || "";
+    assert.equal((nav.match(/<a\b/g) || []).length, 3);
+    assert.ok(!nav.includes("Settings"));
   }
   const home = await (await request("/")).text();
-  assert.ok(home.includes("START AUTO TRADING"));
+  assert.ok(home.includes("Enable Auto Trading"));
   assert.ok(home.includes("Emergency Stop"));
-  assert.ok(home.includes("Every strategy decision comes from OpenAI"));
+  assert.ok(home.includes("AI LIVE ANALYSIS"));
+  assert.ok(home.includes("ACTIVE STRATEGY"));
+  assert.ok(home.includes("NEXT SIGNAL / OPEN ORDERS"));
+  assert.ok(!home.includes('class="inner-card scalp-summary"'));
+  assert.ok(!home.includes('class="inner-card engine-activity"'));
+  assert.ok(!home.includes("Estimated API usage today"));
   passed(
-    "four app screens retain navigation and explicit Auto Trading controls without external charts, chat or voice",
+    "three main screens retain explicit Auto Trading and Emergency Stop; selected legacy Home cards and cost counters are absent",
   );
   assert.equal(
     (
@@ -644,6 +650,15 @@ try {
   ).json();
   assert.equal(privateAnalysis.market, null);
   passed("authenticated terminal candles reach only their owning browser");
+  // Warm the actual export route before sending its freshness-sensitive broker
+  // fixture. Slow development compilation must not require weaker quote limits.
+  await request("/api/mt5/reports?format=json", { cookie: alice });
+  denseMarket.timestamp = Date.now();
+  denseMarket.brokerTimestamp = denseMarket.timestamp;
+  denseMarket.quoteTimestamp = denseMarket.timestamp;
+  r = await request("/api/ea/heartbeat", { headers, body: denseTelemetry });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.equal((await r.json()).tradingEnabled, false);
   const reportResponse = await request("/api/mt5/reports?format=json", {
     cookie: alice,
   });
@@ -699,15 +714,14 @@ try {
     await request("/api/mt5/trading", { cookie: alice })
   ).json();
   for (const action of ["prepare-live", "confirm-live"]) {
-    const obsolete = await request("/api/mt5/trading", {
+    const unauthorized = await request("/api/mt5/trading", {
       cookie: alice,
       body: { action, accountKey: liveState.accountKey },
     });
-    assert.equal(obsolete.status, 410);
-    assert.equal((await obsolete.json()).code, "UNIFIED_AI_CONTROL");
+    assert.equal(unauthorized.status, action === "prepare-live" ? 409 : 400);
   }
   passed(
-    "obsolete account-type approval APIs cannot grant an independent execution permission",
+    "Live authorization rejects malformed review inputs and confirmation without a valid bounded review",
   );
   assert.equal(
     (await request("/api/mt5/stop", { cookie: alice, body: {} })).status,
@@ -791,11 +805,11 @@ try {
   passed(
     "default download is a private self-contained MetaEditor source with a working scoped credential",
   );
-  assert.ok(personalizedSource.includes('#property version   "6.00"'));
+  assert.ok(personalizedSource.includes('#property version   "7.00"'));
   assert.ok(personalizedSource.includes(ENGINE_VERSION));
   assert.ok(personalizedSource.includes("TRADE_ACTION_SLTP"));
   passed(
-    "download includes the compiled-version-matched 6.00 four-timeframe broker execution source",
+    "download includes the compiled-version-matched 7.00 four-timeframe broker execution source",
   );
   assert.equal(
     (
@@ -810,10 +824,9 @@ try {
     cookie: alice,
     body: { action: "confirm-live", confirmation: "ENABLE LIVE 12345678" },
   });
-  assert.equal(consentAttempt.status, 410);
-  assert.equal((await consentAttempt.json()).code, "UNIFIED_AI_CONTROL");
+  assert.equal(consentAttempt.status, 400);
   passed(
-    "automatic trading needs current OpenAI/broker readiness; obsolete Live gate cannot bypass unified START",
+    "automatic trading needs current OpenAI/broker readiness; malformed Live confirmation cannot bypass Start",
   );
   assert.equal(
     (

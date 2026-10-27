@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import DeadpoolAvatar from "./deadpool-avatar";
+import EngineConfiguration from "./engine-configuration";
+import EmergencyStop from "./emergency-stop";
 import BottomNav from "./bottom-nav";
 import "../robot-home.css";
 export default function AppShell({
@@ -21,20 +22,9 @@ export default function AppShell({
           <Link href="/" className="robot-wordmark">
             ROCKET<span>1000</span>
           </Link>
-          {active === "Settings" ? (
-            <span className="inner-avatar" aria-hidden="true">
-              <DeadpoolAvatar />
-            </span>
-          ) : (
-            <Link
-              href="/settings"
-              className="inner-avatar"
-              aria-label="Settings"
-            >
-              <DeadpoolAvatar />
-            </Link>
-          )}
+          <EngineConfiguration />
         </header>
+        <EmergencyStop />
         <div className="inner-heading">
           <Link href="/" className="inner-back">
             ← Home

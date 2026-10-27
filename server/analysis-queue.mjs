@@ -105,6 +105,10 @@ export function analysisQueue(
         "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason='Background scheduling interrupted.' WHERE connection_id=? AND paused=0",
         [now() + 300000, cid],
       );
+      await tx.query(
+        "UPDATE rocket_analysis_activation SET next_attempt=?,lease_until=0,reason='Background scheduling interrupted.' WHERE connection_id=? AND paused=0",
+        [now() + 300000, cid],
+      );
     });
   }
   async function dispatchRun(uid, { onlyNew = false } = {}) {
@@ -140,9 +144,9 @@ export function analysisQueue(
       );
     }
   }
-  async function start(uid) {
+  async function start(uid, options = {}) {
     if (enabled) await probe(uid);
-    const status = await engine.start(uid);
+    const status = await engine.start(uid, options);
     if (!enabled) return status;
     return dispatchRun(uid);
   }

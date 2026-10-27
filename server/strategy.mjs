@@ -1,4 +1,5 @@
 import { adaptiveProfile, technicals } from "./market.mjs";
+import { rangeConditions } from "./range-conditions.mjs";
 
 function validClosedCandles(bars) {
   return (
@@ -328,9 +329,18 @@ export function selectedStrategyProfile(
       (execution.commissionPerLot * execution.tickSize) / execution.tickValue +
       2 * slippagePoints * execution.point
     : null;
+  const range = rangeConditions(
+    snapshot,
+    profile,
+    execution,
+    totalCostDistance,
+  );
+  if (strategy !== "scalping" && range.eligible)
+    allowedStrategies.splice(allowedStrategies.indexOf("wait"), 0, "range");
   return {
     ...profile,
     selectedStrategy: strategy,
+    range,
     scalpingEligible,
     breakoutEligible,
     breakoutSide: breakoutEligible ? breakoutSide : null,

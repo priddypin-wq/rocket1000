@@ -137,7 +137,7 @@ for (const type of ["demo", "live"]) {
         assert.equal(current.permissionActive, true);
         assert.equal(current.automation.state, "running");
         assert.equal(current.account.type, type);
-        assert.equal(current.liveConfirmed, false);
+        assert.equal(current.liveConfirmed, type === "live");
         assert.equal(current.settingsRevision, initial.settingsRevision);
         assert.equal(current.liveConfirmedAt, initial.liveConfirmedAt);
       }
@@ -168,7 +168,7 @@ for (const type of ["demo", "live"]) {
       assert.equal(current.automation.state, "stopped");
       assert.equal(current.orders[0].status, "cancelled");
       assert.equal(current.liveConfirmedAt, before.liveConfirmedAt);
-      assert.equal(current.liveConfirmed, false);
+      assert.equal(current.liveConfirmed, type === "live");
       assert.equal(
         current.activationEvents[0].event,
         "automatic_trading_paused",
@@ -252,6 +252,8 @@ test("EA account switching synchronizes verified identity and financials and lea
       f.trade.act("alice", { action: "start-auto", accountKey: oldAccountKey }),
       /account changed/,
     );
+    await assert.rejects(f.start(),e=>e.code==="LIVE_AUTHORIZATION_REQUIRED");
+    await approveFixtureLive(f.trade);
     await f.start();
     assert.equal((await f.state()).permissionActive, true);
     assert.notEqual((await f.state()).accountKey, oldAccountKey);

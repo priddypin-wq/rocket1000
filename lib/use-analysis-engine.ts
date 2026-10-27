@@ -8,6 +8,13 @@ export type AnalysisEngineStatus = {
   lastCycle?: number | null;
   nextCycle?: number | null;
   frequencySeconds: number;
+  mode?: "analysis" | "execution";
+  executionAuthorized?: boolean;
+  automaticAnalysis?: {
+    paused: boolean;
+    nextAttempt: number | null;
+    reason: string | null;
+  };
   usage?: {
     inputTokens: number;
     outputTokens: number;

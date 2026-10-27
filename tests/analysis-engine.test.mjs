@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engineService } from "../server/engine-service.mjs";
 import { ApiError } from "../server/errors.mjs";
-import { fixture, market, terminal } from "./helpers.mjs";
+import { fixture, market, terminal, approveFixtureLive } from "./helpers.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { tradeContext, tradingService } from "../server/trading.mjs";
 import { openaiCredentialService } from "../server/openai-credentials.mjs";
@@ -115,6 +115,7 @@ async function setup({
       register,
     );
   await send(undefined, true);
+  if (type === "live") await approveFixtureLive(tradingService(f.db,{now:f.now}));
   return { ...f, env, keys, engine, send, calls: () => calls };
 }
 test("START requires an actual scheduler check-in and never claims an unstarted worker", async () => {

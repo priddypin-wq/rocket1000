@@ -9,6 +9,7 @@ import {
 import { markManagedPositions } from "./position-ownership.mjs";
 import { winningAdditionAllowed } from "./winning-additions.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
+import { rangeProposalAllowed } from "./range-conditions.mjs";
 import { configuredModel, isConfiguredModel } from "./ai-provider.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import {
@@ -572,6 +573,7 @@ export async function tradeContext(tx, cid, now) {
     execution?.protocol === 4 &&
     !!execution.terminalId &&
     execution.engineVersion === ENGINE_VERSION &&
+    (i.account_type !== "live" || consent.confirmed) &&
     !(
       i.account_type === "live" &&
       process.env.ROCKET_DISABLE_LIVE_ORDERS === "1"
@@ -618,6 +620,22 @@ export function orderRisk(ctx, order) {
     ctx.profile && m
       ? selectedStrategyProfile(m, ctx.settings, ctx.profile, e)
       : null;
+  if (
+    kind === "OPEN" &&
+    order?.source === "ai" &&
+    order.signalStrategy === "range" &&
+    !rangeProposalAllowed(
+      strategyProfile,
+      order.side,
+      order.stop,
+      order.takeProfit,
+    )
+  )
+    throw new ApiError(
+      409,
+      "The current broker range does not support this direction or protective levels.",
+      "AI_RANGE_NOT_VALID",
+    );
   if (!["OPEN", "MODIFY", "CLOSE"].includes(kind))
     throw new ApiError(400, "Unsupported broker operation.");
   if (
@@ -952,7 +970,7 @@ export async function authorizeUnifiedAutomation(tx, ctx, now) {
   )
     throw new ApiError(
       409,
-      "Install EA 6.00 for the current authenticated execution engine.",
+      "Install EA 7.00 for the current authenticated execution engine.",
     );
   if (
     !ctx.analysisEngine ||
@@ -974,6 +992,12 @@ export async function authorizeUnifiedAutomation(tx, ctx, now) {
       403,
       "Broker Live orders are disabled by the server operator.",
       "LIVE_OPERATOR_DISABLED",
+    );
+  if (ctx.i.account_type === "live" && !ctx.consent.confirmed)
+    throw new ApiError(
+      403,
+      "Review and authorize this exact Live account before enabling execution.",
+      "LIVE_AUTHORIZATION_REQUIRED",
     );
   await tx.query(
     "INSERT INTO rocket_trade_policy(connection_id,installation_id,session_id,expires_at) VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,expires_at=excluded.expires_at",
@@ -1162,13 +1186,113 @@ export function tradingService(db, { now = Date.now } = {}) {
         await audit("risk_settings_changed_automation_stopped");
         return { ok: true };
       }
-      if (["prepare-live", "confirm-live"].includes(input?.action))
-        throw new ApiError(
-          410,
-          "Use the unified START AI control for the connected account.",
-          "UNIFIED_AI_CONTROL",
+      if (input?.action === "prepare-live") {
+        if (
+          Object.keys(input).length !== 1 ||
+          ctx.i?.account_type !== "live" ||
+          !ctx.i.registered_at ||
+          !ctx.x ||
+          ctx.connectionBlockers.length ||
+          ctx.execution?.engineVersion !== ENGINE_VERSION
+        )
+          throw new ApiError(
+            409,
+            "A fresh authenticated Live account and current EA are required for authorization.",
+            "LIVE_ACCOUNT_NOT_VERIFIED",
+          );
+        const id = randomUUID(),
+          expiresAt = now() + 120000;
+        const account = {
+          login: ctx.i.account_login,
+          server: ctx.i.broker_server,
+          type: "live",
+        };
+        await tx.query(
+          "UPDATE rocket_live_approvals SET expires_at=? WHERE connection_id=? AND used_at IS NULL",
+          [now(), cid],
         );
+        await tx.query(
+          "INSERT INTO rocket_live_approvals(id,user_id,connection_id,installation_id,session_id,account_key,settings_revision,engine_version,created_at,expires_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          [
+            id,
+            uid,
+            cid,
+            ctx.i.id,
+            ctx.x.session_id,
+            ctx.consent.key,
+            ctx.revision,
+            ENGINE_VERSION,
+            now(),
+            expiresAt,
+            JSON.stringify(account),
+          ],
+        );
+        await audit("live_activation_review_prepared");
+        return {
+          id,
+          account,
+          accountKey: ctx.consent.key,
+          engineVersion: ENGINE_VERSION,
+          expiresAt,
+          settingsRevision: ctx.revision,
+        };
+      }
+      if (input?.action === "confirm-live") {
+        if (
+          Object.keys(input).some(
+            (k) => !["action", "id", "accountKey"].includes(k),
+          ) ||
+          typeof input.id !== "string"
+        )
+          throw new ApiError(400, "Invalid Live account confirmation.");
+        const [review] = await tx.query(
+          "SELECT * FROM rocket_live_approvals WHERE id=? AND user_id=? AND connection_id=?",
+          [input.id, uid, cid],
+        );
+        if (
+          !review ||
+          review.used_at ||
+          Number(review.expires_at) <= now() ||
+          review.account_key !== input.accountKey ||
+          review.account_key !== ctx.consent.key ||
+          review.engine_version !== ENGINE_VERSION ||
+          review.settings_revision !== ctx.revision ||
+          review.installation_id !== ctx.i?.id ||
+          review.session_id !== ctx.x?.session_id ||
+          ctx.i?.account_type !== "live" ||
+          ctx.connectionBlockers.length ||
+          ctx.execution?.engineVersion !== ENGINE_VERSION
+        )
+          throw new ApiError(
+            409,
+            "Live authorization expired or the verified account changed. Review it again.",
+            "LIVE_REVIEW_EXPIRED",
+          );
+        await tx.query(
+          "UPDATE rocket_live_approvals SET used_at=? WHERE id=? AND used_at IS NULL",
+          [now(), review.id],
+        );
+        await tx.query(
+          "INSERT INTO rocket_live_consents(user_id,account_key,account_login,broker_server,confirmed_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id,account_key) DO UPDATE SET account_login=excluded.account_login,broker_server=excluded.broker_server,confirmed_at=excluded.confirmed_at",
+          [
+            uid,
+            ctx.consent.key,
+            ctx.i.account_login,
+            ctx.i.broker_server,
+            now(),
+          ],
+        );
+        await audit("live_account_explicitly_confirmed");
+        return {
+          ok: true,
+          liveConfirmed: true,
+          accountKey: ctx.consent.key,
+          engineVersion: ENGINE_VERSION,
+          executionEnabled: false,
+        };
+      }
       if (input?.action === "revoke-live") {
+        await revokeLiveActivation(tx, uid, now());
         await pauseActivation(tx, cid, "Automatic trading stopped by user.");
         await tx.query(
           "UPDATE rocket_analysis_engine SET state='stopped',run_id=?,lease_until=0,reason='Automatic trading stopped by user.' WHERE connection_id=?",

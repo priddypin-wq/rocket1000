@@ -67,6 +67,10 @@ export function usageService(
         "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason=? WHERE connection_id=? AND paused=0",
         [now() + 300000, reason, c.id],
       );
+      await tx.query(
+        "UPDATE rocket_analysis_activation SET next_attempt=?,lease_until=0,reason=? WHERE connection_id=? AND paused=0",
+        [now() + 300000, reason, c.id],
+      );
     });
   }
   async function totals(uid, tx = db) {

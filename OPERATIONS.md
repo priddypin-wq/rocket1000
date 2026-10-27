@@ -4,6 +4,8 @@ Do not put keys, database credentials or encryption secrets in GitHub or chat. T
 
 ## Existing target and release boundary
 
+Current local/review changes use engine `rocket-ai-7` and compiled EA 7.00; they are not deployed. Review [the adaptive upgrade report](ADAPTIVE-UPGRADE-VERIFICATION.md) before any release. Migrate the new analysis-activation and execution-intent tables through the existing idempotent migration. A matching backend/EA release is required; do not rotate connection credentials unnecessarily. Preserve the current production `ROCKET_DISABLE_LIVE_ORDERS` value. No order qualification was performed in this development task.
+
 The owner-selected application is https://rocket1000.vercel.app, existing project `prj_oTLaK79PdNcNy8dpXiINtTiqlAsC` in workspace `sniper-fx`. Owner-approved Vercel CLI access verified and linked this exact project. Current deployment `dpl_FdQA68t7hJ5uhzGwwSqCyaAJ258n` was staged, checked and promoted on 27 October. Deployment `dpl_3tcegNyyEJaRogZigBWsWRYkVYt1` is the earlier rollback target. Do not create a duplicate project or change its existing Git repository mapping merely to deploy.
 
 The review branch explicitly disables automatic Vercel Git deployment; the approved releases used the manual CLI flow. Before the 27 October migration, an encrypted logical snapshot of 32 existing tables was saved inside the same database. The earlier release saved 24 tables and added the separate encryption secret and Queue flag. These snapshots are not off-site disaster recovery copies. The current release preserved the OpenAI key, database, HTTPS URLs and existing EA credentials, and persistently paused every existing connection. No broker orders or Live execution were activated.

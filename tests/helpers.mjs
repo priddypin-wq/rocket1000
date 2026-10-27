@@ -98,9 +98,17 @@ export const decision = {
   risks: ["Economic news is unknown."],
 };
 
-// Compatibility for execution regression fixtures: account-specific approval
-// dialogs no longer grant authority. Only a seeded test engine plus START can.
+// Explicit isolated Live consent via the same bounded account review as the
+// app. This never grants a policy and cannot qualify a real broker connection.
 export async function approveFixtureLive(trade, uid = "alice") {
+  const state = await trade.status(uid);
+  if (state.account?.type !== "live" || state.liveConfirmed) return state;
+  const review = await trade.act(uid, { action: "prepare-live" });
+  await trade.act(uid, {
+    action: "confirm-live",
+    id: review.id,
+    accountKey: review.accountKey,
+  });
   return trade.status(uid);
 }
 

@@ -92,8 +92,8 @@ export default function AnalysisPanel() {
         </>
       ) : (
         <p>
-          No verified AI decision yet. Start Auto Trading on Home after
-          connecting OpenAI and MT5.
+          No verified AI decision yet. Analysis initializes after a valid EA
+          connection; execution remains separately authorized.
         </p>
       )}
       {profile ? (
@@ -150,14 +150,6 @@ export default function AnalysisPanel() {
           <p>No recorded analysis cycles.</p>
         )}
       </details>
-      {engine.data?.usage ? (
-        <p className="inner-caption">
-          API tokens today: {engine.data.usage.inputTokens} input /{" "}
-          {engine.data.usage.outputTokens} output · Estimated $
-          {engine.data.usage.estimatedUsd.toFixed(4)} · Reserved $
-          {engine.data.usage.reservedUsd.toFixed(4)}
-        </p>
-      ) : null}
       {error || engine.error ? (
         <p className="inner-error" role="alert">
           {error || engine.error}

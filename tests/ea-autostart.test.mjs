@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { fixture, market, terminal } from "./helpers.mjs";
+import { fixture, market, terminal, approveFixtureLive } from "./helpers.mjs";
 import { engineService } from "../server/engine-service.mjs";
 import { tradingService } from "../server/trading.mjs";
 import { analysisQueue } from "../server/analysis-queue.mjs";
@@ -188,8 +188,10 @@ for (const type of ["demo", "live"]) {
         (await f.engine.status("alice")).automaticActivation.paused,
         true,
       );
-      assert.equal(f.tests(), 0);
+      assert.equal(f.tests(), 1);
       assert.equal(f.providerCalls(), 0);
+      assert.equal((await f.engine.status("alice")).mode, "analysis");
+      if (type === "live") await approveFixtureLive(f.trade);
       await f.engine.start("alice");
       assert.equal((await f.trade.status("alice")).permissionActive, true);
       assert.equal(
@@ -200,19 +202,19 @@ for (const type of ["demo", "live"]) {
       await f.db.close();
     }
   });
-  test(`${type}: authenticated EA readiness automatically starts one real engine run`, async () => {
+  test(`${type}: authenticated EA readiness automatically starts one analysis-only engine run`, async () => {
     const f = await setup(type);
     try {
       await f.engine.heartbeat();
       await Promise.all([f.auto(), f.auto(), f.auto()]);
       const first = await f.row();
       assert.equal(first.state, "scheduled");
-      assert.equal((await f.trade.status("alice")).permissionActive, true);
+      assert.equal((await f.trade.status("alice")).permissionActive, false);
       assert.equal(f.tests(), 1);
       await Promise.all([f.auto(), f.auto(), f.auto()]);
       assert.equal((await f.row()).run_id, first.run_id);
       assert.equal(f.tests(), 1);
-      assert.equal(await f.count("rocket_trade_policy"), 1);
+      assert.equal(await f.count("rocket_trade_policy"), 0);
       assert.equal(await f.count("rocket_live_consents"), 0);
       assert.equal(await f.count("rocket_trade_commands"), 0);
       await f.engine.cycle(f.id);
@@ -269,7 +271,7 @@ test("automatic account switching invalidates the old policy and validates the e
     const state = await f.trade.status("alice");
     assert.equal(state.account.login, "22222222");
     assert.equal(state.account.type, "live");
-    assert.equal(state.permissionActive, true);
+    assert.equal(state.permissionActive, false);
     assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {
     await f.db.close();
@@ -322,7 +324,7 @@ test("automatic restart can monitor a reconciled owned position without opening 
     await f.auto();
     assert.equal((await f.row()).state, "scheduled");
     const state = await f.trade.status("alice");
-    assert.equal(state.permissionActive, true);
+    assert.equal(state.permissionActive, false);
     assert.ok(
       state.blockers.some((reason) =>
         /^Maximum 1 open positions;/.test(reason),
@@ -368,7 +370,7 @@ test("an unrelated broker position cannot use the owned-position restart excepti
     assert.equal((await f.trade.status("alice")).permissionActive, false);
     assert.equal(await f.count("rocket_trade_policy"), 0);
     assert.equal(await f.count("rocket_trade_commands"), 0);
-    assert.equal(f.tests(), 0);
+    assert.equal(f.tests(), 1);
     assert.equal(f.providerCalls(), 0);
   } finally {
     await f.db.close();
@@ -390,7 +392,7 @@ for (const [label, options, prepare] of [
   ["daily loss limit", { executionPatch: { dailyLoss: 200 } }],
   ["stale broker data", {}, (f) => f.advance(31000)],
 ]) {
-  test(`automatic activation fails closed for ${label} before any paid request`, async () => {
+  test(`automatic activation fails closed for ${label} without execution authorization`, async () => {
     const f = await setup("demo", options);
     try {
       await f.engine.heartbeat();
@@ -399,7 +401,16 @@ for (const [label, options, prepare] of [
       assert.equal((await f.trade.status("alice")).permissionActive, false);
       assert.equal(await f.count("rocket_trade_policy"), 0);
       assert.equal(await f.count("rocket_trade_commands"), 0);
-      assert.equal(f.tests(), 0);
+      assert.equal(
+        f.tests(),
+        [
+          "missing OpenAI key",
+          "unsupported EA engine",
+          "stale broker data",
+        ].includes(label)
+          ? 0
+          : 1,
+      );
       assert.equal(f.providerCalls(), 0);
     } finally {
       await f.db.close();
@@ -471,7 +482,7 @@ test("a model-cycle billing failure suspends execution with persisted retry back
     const failed = await f.engine.status("alice");
     assert.equal(failed.state, "suspended");
     assert.equal(failed.executionAuthorized, false);
-    assert.ok(failed.automaticActivation.nextAttempt >= f.now() + 299000);
+    assert.ok(failed.automaticAnalysis.nextAttempt >= f.now() + 299000);
     assert.equal(f.providerCalls(), 1);
     for (let i = 0; i < 8; i++) {
       f.advance(5000);
@@ -687,7 +698,7 @@ test("a genuine queue callback activates and continues the engine without a brow
     assert.ok(next, "The verified callback must schedule an actual engine run");
     await f.queue.consume(next[1]);
     assert.equal(f.providerCalls(), 1);
-    assert.equal((await f.trade.status("alice")).permissionActive, true);
+    assert.equal((await f.trade.status("alice")).permissionActive, false);
     assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {
     await f.db.close();
@@ -716,7 +727,7 @@ test("a durable worker discovers an eligible EA and starts monitoring without br
     const row = await f.row();
     assert.ok(row, "Worker discovery must persist an engine run");
     assert.ok(["scheduled", "running"].includes(row.state));
-    assert.equal((await f.trade.status("alice")).permissionActive, true);
+    assert.equal((await f.trade.status("alice")).permissionActive, false);
     assert.equal(f.tests(), 1);
     assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {

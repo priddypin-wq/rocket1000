@@ -4,6 +4,8 @@ This is the existing responsive Next.js application and native MT5 Expert Adviso
 
 ## Server and worker
 
+The current review upgrade is engine `rocket-ai-7` / EA 7.00, not deployed. The public app still uses the approved engine 6 release. Do not install EA 7 against the old backend or change the production Live-order disable switch during review. See [current verification and qualification requirements](ADAPTIVE-UPGRADE-VERIFICATION.md).
+
 1. Use the existing ROCKET1000 Vercel project and HTTPS hostname. Do not create a duplicate project or change the installed EA's backend origin.
 2. Keep `DATABASE_URL`, `ROCKET_DASHBOARD_URL` and `ROCKET_BACKEND_URL` private server configuration. Production uses shared PostgreSQL, not local serverless SQLite.
 3. Configure `OPENAI_API_KEY` as a server secret and `OPENAI_MODEL` as an account-accessible Responses model. Keep `ROCKET_OPENAI_SERVER_MANAGED=1`. Never prefix secrets with `NEXT_PUBLIC_`. A successful real connection test, available billing and reviewed token pricing are required; model availability is not assumed.
@@ -20,10 +22,10 @@ See `.env.example` for names/placeholders and `OPERATIONS.md` for the existing t
 3. Use Copy EA Connection URL. Paste only that public HTTPS origin into Tools → Options → Expert Advisors → Allow WebRequest. The public URL contains no connection token or OpenAI key.
 4. Sign into the desired broker account inside MT5. Attach ROCKET1000 EA to the broker symbol to be analyzed, preserving suffixes such as `XAUUSDm`. Account type is detected from `ACCOUNT_TRADE_MODE`; do not choose Demo/Live manually.
 5. Keep Algo Trading OFF during the initial connection check. Confirm the app reports the actual broker, account, recent heartbeat and current EA version. A Connected heartbeat with stale quotes is not execution readiness.
-6. For an authorized **Demo acceptance test**, enable the EA and terminal Algo Trading permissions, verify OpenAI in Settings, then press **START AUTO TRADING** on Home. This is the explicit ON authorization. Every order still needs a valid AI decision and independent server/native risk approval. No per-order dialog is shown for eligible automatic commands.
+6. For a separately authorized **Demo acceptance test**, enable the EA and terminal Algo Trading permissions, verify OpenAI using the header gear → Test Connection, then use **Enable Auto Trading** on Home. Fresh connections may analyze automatically but do not execute. This is the explicit ON authorization for execution. Every order still needs a valid AI decision and independent server/native risk approval. No per-order dialog is shown for eligible automatic commands. This development task does not authorize broker tests or orders.
 7. Stop Auto Trading or Emergency Stop persists OFF. It does not close existing positions. A separately reviewed manual Close Position uses its own bounded ticket/account confirmation. Broker SL/TP remain independent protections.
 
-The same source and execution pipeline support Live. Do not place Live development trades or activate production execution before acceptance and owner approval. An enabled session can resume only after account, terminal, market, provider and risk verification. An explicit stop is never cleared by reconnecting or switching accounts.
+The same source and execution pipeline support Live. The header gear → Trading authorization & verification prepares a short-lived review for the exact Live account and engine; confirmation saves approval without starting orders. Enable Auto Trading remains a separate action. Keep `ROCKET_DISABLE_LIVE_ORDERS` unchanged until a separately authorized Live-readiness review after genuine Demo qualification. Same-account recovery requires prior enabled intent, the same installation/terminal/engine, fresh data, provider/scheduler readiness and no uncertain broker commands. Stop and Emergency Stop never clear on reconnection. A different account never inherits execution permission.
 
 ### MetaEditor alternative
 

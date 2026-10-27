@@ -1,6 +1,6 @@
 // ROCKET1000 EA: real MT5 broker execution with account-bound server authorization.
 #property copyright "ROCKET1000"
-#property version   "6.00"
+#property version   "7.00"
 #property description "ROCKET1000 EA - real Demo/Live market data and account-authorized broker execution."
 #property strict
 
@@ -58,7 +58,7 @@ void ShowStatus(string value) {
    if(value!=current_status) Print("ROCKET1000 EA: ",value);
    current_status=value;
    string account_label=AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO?"Demo":(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_REAL?"Live":"Unknown");
-   Comment("ROCKET1000 EA 6.00\n",value,"\nAccount type: ",account_label,"\nBroker execution: ",(order_permission?"PERMISSION ACTIVE":"STOPPED"),"\n",backend_url);
+   Comment("ROCKET1000 EA 7.00\n",value,"\nAccount type: ",account_label,"\nBroker execution: ",(order_permission?"PERMISSION ACTIVE":"STOPPED"),"\n",backend_url);
 }
 // ROCKET1000_CONFIG_BEGIN
 bool ConfigFailure(string reason,int error=0){
@@ -510,14 +510,14 @@ string ExecutionSnapshot() {
    double tick_value=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE_LOSS),SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE_PROFIT));
    string account="{\"balance\":"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+",\"equity\":"+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+",\"currency\":\""+EscapeJson(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"brokerName\":\""+EscapeJson(AccountInfoString(ACCOUNT_COMPANY))+"\",\"dailyProfitLoss\":"+(daily_history_verified?DoubleToString(realized_today+AccountInfoDouble(ACCOUNT_PROFIT),2):"null")+"}";
    account=StringSubstr(account,0,StringLen(account)-1)+",\"margin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),2)+",\"freeMargin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2)+",\"marginLevel\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),2)+",\"floatingProfit\":"+DoubleToString(AccountInfoDouble(ACCOUNT_PROFIT),2)+",\"positionsCount\":"+IntegerToString(PositionsTotal())+",\"ordersCount\":"+IntegerToString(OrdersTotal())+"}";
-   return "{\"engineVersion\":\"rocket-ai-6\",\"accountMarginMode\":"+IntegerToString(AccountInfoInteger(ACCOUNT_MARGIN_MODE))+",\"account\":"+account+",\"positionsAvailable\":"+(positions_available?"true":"false")+",\"positions\":"+positions_snapshot+",\"brokerPendingAvailable\":"+(broker_pending_available?"true":"false")+",\"brokerPending\":"+broker_pending_snapshot+",\"tradeHistory\":"+BrokerHistorySnapshot()+",\"sessionOpen\":"+(TradingSessionOpen(_Symbol)?"true":"false")+",\"symbolTradeMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_MODE))+",\"tradeExecutionMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_EXEMODE))+",\"orderMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE))+",\"fillingMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE))+",\"performance\":"+PerformanceSnapshot()+",\"tickSize\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),10)+",\"tickValue\":"+DoubleToString(tick_value,8)+",\"point\":"+DoubleToString(_Point,10)+",\"volumeStep\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),8)+",\"minVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN),8)+",\"maxVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),8)+",\"stopLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL))+",\"commissionPerLot\":"+DoubleToString(commission_per_lot,8)+",\"costsVerified\":"+(costs_verified?"true":"false")+",\"consecutiveLosses\":"+IntegerToString(consecutive_losses)+",\"consecutiveLossesVerified\":"+(loss_history_verified?"true":"false")+",\"dayStartEquity\":"+DoubleToString(risk_day_start,2)+",\"dailyLoss\":"+DoubleToString(risk_daily_loss,2)+",\"peakEquity\":"+DoubleToString(risk_peak,2)+",\"existingRisk\":"+DoubleToString(risk_existing,2)+",\"pendingOrders\":"+IntegerToString(OrdersTotal())+",\"freeMargin\":"+DoubleToString(MathMax(0,AccountInfoDouble(ACCOUNT_MARGIN_FREE)),2)+",\"tradeAllowed\":"+(TradeAllowed()?"true":"false")+",\"stopsVerified\":"+(risk_stops?"true":"false")+",\"newsVerified\":"+(news_verified?"true":"false")+",\"newsBlocked\":"+(news_blocked?"true":"false")+"}";
+   return "{\"engineVersion\":\"rocket-ai-7\",\"accountMarginMode\":"+IntegerToString(AccountInfoInteger(ACCOUNT_MARGIN_MODE))+",\"account\":"+account+",\"positionsAvailable\":"+(positions_available?"true":"false")+",\"positions\":"+positions_snapshot+",\"brokerPendingAvailable\":"+(broker_pending_available?"true":"false")+",\"brokerPending\":"+broker_pending_snapshot+",\"tradeHistory\":"+BrokerHistorySnapshot()+",\"sessionOpen\":"+(TradingSessionOpen(_Symbol)?"true":"false")+",\"symbolTradeMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_MODE))+",\"tradeExecutionMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_EXEMODE))+",\"orderMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_ORDER_MODE))+",\"fillingMode\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE))+",\"performance\":"+PerformanceSnapshot()+",\"tickSize\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE),10)+",\"tickValue\":"+DoubleToString(tick_value,8)+",\"point\":"+DoubleToString(_Point,10)+",\"volumeStep\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),8)+",\"minVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN),8)+",\"maxVolume\":"+DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX),8)+",\"stopLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL))+",\"commissionPerLot\":"+DoubleToString(commission_per_lot,8)+",\"costsVerified\":"+(costs_verified?"true":"false")+",\"consecutiveLosses\":"+IntegerToString(consecutive_losses)+",\"consecutiveLossesVerified\":"+(loss_history_verified?"true":"false")+",\"dayStartEquity\":"+DoubleToString(risk_day_start,2)+",\"dailyLoss\":"+DoubleToString(risk_daily_loss,2)+",\"peakEquity\":"+DoubleToString(risk_peak,2)+",\"existingRisk\":"+DoubleToString(risk_existing,2)+",\"pendingOrders\":"+IntegerToString(OrdersTotal())+",\"freeMargin\":"+DoubleToString(MathMax(0,AccountInfoDouble(ACCOUNT_MARGIN_FREE)),2)+",\"tradeAllowed\":"+(TradeAllowed()?"true":"false")+",\"stopsVerified\":"+(risk_stops?"true":"false")+",\"newsVerified\":"+(news_verified?"true":"false")+",\"newsBlocked\":"+(news_blocked?"true":"false")+"}";
 }
 string TelemetryBody() {
    ENUM_ACCOUNT_TRADE_MODE mode=(ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(mode!=ACCOUNT_TRADE_MODE_REAL && mode!=ACCOUNT_TRADE_MODE_DEMO)return "";
    string account_type=(mode==ACCOUNT_TRADE_MODE_DEMO?"demo":"live");
    bool broker_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
-   string json="{\"accountLogin\":\""+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"brokerServer\":\""+EscapeJson(AccountInfoString(ACCOUNT_SERVER))+"\",\"accountType\":\""+account_type+"\",\"accountTradeMode\":"+IntegerToString((long)mode)+",\"chartSymbol\":\""+EscapeJson(_Symbol)+"\",\"authorizedSymbols\":[\""+EscapeJson(_Symbol)+"\"],\"instanceId\":\""+ea_instance+"\",\"eaVersion\":\"6.00\",\"terminalBuild\":"+IntegerToString(TerminalInfoInteger(TERMINAL_BUILD))+",\"brokerConnected\":"+(broker_connected?"true":"false")+"}";
+   string json="{\"accountLogin\":\""+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"brokerServer\":\""+EscapeJson(AccountInfoString(ACCOUNT_SERVER))+"\",\"accountType\":\""+account_type+"\",\"accountTradeMode\":"+IntegerToString((long)mode)+",\"chartSymbol\":\""+EscapeJson(_Symbol)+"\",\"authorizedSymbols\":[\""+EscapeJson(_Symbol)+"\"],\"instanceId\":\""+ea_instance+"\",\"eaVersion\":\"7.00\",\"terminalBuild\":"+IntegerToString(TerminalInfoInteger(TERMINAL_BUILD))+",\"brokerConnected\":"+(broker_connected?"true":"false")+"}";
    // Position/account synchronization must continue when chart candles or quotes are unavailable.
    positions_snapshot=PositionsSnapshot(positions_available);
    broker_pending_snapshot=PendingOrdersSnapshot(broker_pending_available);
@@ -584,7 +584,7 @@ bool SetFilling(MqlTradeRequest &request){
 }
 bool SafeOrder(string body,MqlTradeRequest &request){
    if(!registered || !order_permission || clock_anchor<=0 || !TradeAllowed() || !SameAccount(body))return false;
-   if(JsonValue(body,"engineVersion",true)!="rocket-ai-6")return false;
+   if(JsonValue(body,"engineVersion",true)!="rocket-ai-7")return false;
    double expiry=StringToDouble(JsonValue(body,"expiresAt",false));
    if(expiry<=ServerNow() || expiry>ServerNow()+60000)return false;
    string kind=JsonValue(body,"kind",true),symbol=JsonValue(body,"symbol",true),side=JsonValue(body,"side",true);
@@ -593,6 +593,8 @@ bool SafeOrder(string body,MqlTradeRequest &request){
    double volume=StringToDouble(JsonValue(body,"volume",false)),stop=StringToDouble(JsonValue(body,"stop",false)),tp=StringToDouble(JsonValue(body,"takeProfit",false)),review=StringToDouble(JsonValue(body,"entry",false));
    double spread_cap=StringToDouble(JsonValue(body,"maxSpread",false)),slippage_cap=StringToDouble(JsonValue(body,"maxSlippage",false));
    double risk_pct=StringToDouble(JsonValue(body,"riskPerTradePct",false)),daily_pct=StringToDouble(JsonValue(body,"maxDailyLossPct",false)),drawdown_pct=StringToDouble(JsonValue(body,"maxDrawdownPct",false)),position_limit=StringToDouble(JsonValue(body,"maxPositions",false));
+   double numeric_values[]={volume,stop,tp,review,spread_cap,slippage_cap,risk_pct,daily_pct,drawdown_pct,position_limit};
+   for(int n=0;n<ArraySize(numeric_values);n++)if(!MathIsValidNumber(numeric_values[n]))return false;
    if(volume<=0 || review<=0 || spread_cap<1 || spread_cap>1000 || slippage_cap<1 || slippage_cap>1000 || risk_pct<=0 || risk_pct>0.25 || daily_pct<=0 || daily_pct>1 || drawdown_pct<=0 || drawdown_pct>5 || position_limit!=1)return false;
    MqlTick quote;if(!FreshQuote(symbol,quote,3))return false;
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP),tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE),point=SymbolInfoDouble(symbol,SYMBOL_POINT);
@@ -635,7 +637,9 @@ bool SafeOrder(string body,MqlTradeRequest &request){
       if(PositionsTotal()!=0)return false;
       double aggregate_pct=StringToDouble(JsonValue(body,"aggregateRiskPct",false)),min_rr=StringToDouble(JsonValue(body,"minRewardRisk",false));
       if(aggregate_pct<=0 || aggregate_pct>0.25 || (min_rr<1.5 || min_rr>10))return false;
-      double balance=AccountInfoDouble(ACCOUNT_BALANCE),equity=AccountInfoDouble(ACCOUNT_EQUITY),capital=MathMin(balance,equity),entry=side=="BUY"?quote.ask:quote.bid;
+      double balance=AccountInfoDouble(ACCOUNT_BALANCE),equity=AccountInfoDouble(ACCOUNT_EQUITY),free_margin=AccountInfoDouble(ACCOUNT_MARGIN_FREE),capital=MathMin(balance,equity),entry=side=="BUY"?quote.ask:quote.bid;
+      // Broker metadata is mandatory even when the server approves a proposal.
+      if(!MathIsValidNumber(balance) || !MathIsValidNumber(equity) || !MathIsValidNumber(free_margin) || balance<=0 || equity<=0 || free_margin<=0)return false;
       if(capital<=0 || risk_daily_loss>=risk_day_start*daily_pct/100 || risk_peak<=0 || (risk_peak-equity)/risk_peak>=drawdown_pct/100 || (quote.ask-quote.bid)/point>spread_cap+0.00001 || MathAbs(entry-review)>slippage_cap*point)return false;
       if(stop<=0 || tp<=0 || MathAbs(stop/tick-MathRound(stop/tick))>0.00001 || MathAbs(tp/tick-MathRound(tp/tick))>0.00001)return false;
       double distance=(double)MathMax(SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL),SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL))*point;
@@ -649,12 +653,12 @@ bool SafeOrder(string body,MqlTradeRequest &request){
       if(worst_stop<=0 || worst_tp<=0 || !OrderCalcProfit(type,symbol,volume,worst,worst_stop,loss) || !OrderCalcProfit(type,symbol,volume,worst,worst_tp,reward) || loss>=0)return false;
       double cost=commission_per_lot*volume,total_risk=-loss+cost,net_reward=reward-cost;
       if(!MathIsValidNumber(total_risk) || !MathIsValidNumber(net_reward) || total_risk<=0 || net_reward<=0 || total_risk>capital*risk_pct/100 || risk_existing+total_risk>capital*aggregate_pct/100 || net_reward/total_risk+0.000001<min_rr)return false;
-      if(!OrderCalcMargin(type,symbol,volume,worst,margin) || !MathIsValidNumber(margin) || margin<0 || margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))return false;
+      if(!OrderCalcMargin(type,symbol,volume,worst,margin) || !MathIsValidNumber(margin) || margin<0 || margin>free_margin)return false;
       request.action=TRADE_ACTION_DEAL;request.type=type;request.volume=volume;request.price=entry;request.sl=stop;request.tp=tp;
       if(!SetFilling(request))return false;
    }
    MqlTradeCheckResult checked={};
-   if(!OrderCheck(request,checked) || checked.retcode!=0 || checked.margin_free<0)return false;
+   if(!OrderCheck(request,checked) || checked.retcode!=0 || !MathIsValidNumber(checked.margin_free) || checked.margin_free<0)return false;
    return true;
 }
 void ExecuteBrokerCommand(string body){

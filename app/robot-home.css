@@ -1,3 +1,311 @@
+/* Adaptive dashboard retains Rocket1000's purple, pink and rounded surfaces. */
+.adaptive-home {
+  gap: 0;
+}
+.adaptive-assistant {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 0 22px;
+}
+.adaptive-avatar {
+  flex: 0 0 84px;
+  filter: drop-shadow(0 0 20px #ed244c55);
+}
+.adaptive-avatar svg {
+  display: block;
+  width: 84px;
+  height: 84px;
+}
+.adaptive-assistant h1 {
+  margin: 7px 0;
+  font-size: 22px;
+  letter-spacing: -0.6px;
+}
+.adaptive-assistant .robot-intro {
+  text-align: left;
+  font-size: 8px;
+  letter-spacing: 2px;
+  margin: 0;
+}
+.adaptive-assistant .deadpool-status {
+  margin: 0;
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.adaptive-account {
+  display: grid;
+  gap: 7px;
+  padding: 15px 0 19px;
+  border-top: 1px solid #3e253d;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.adaptive-account span {
+  color: #b9a2b8;
+}
+.adaptive-account b {
+  font-size: 12px;
+  font-weight: 600;
+}
+.adaptive-account small {
+  color: #a58da0;
+}
+.adaptive-content {
+  display: grid;
+  gap: 16px;
+  padding: 18px 0 28px;
+}
+.adaptive-content .inner-card {
+  margin: 0;
+}
+.adaptive-content h2 {
+  font-size: 20px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  margin: 10px 0;
+}
+.adaptive-content p {
+  font-size: 12px;
+  line-height: 1.75;
+  color: #c0aebd;
+}
+.adaptive-content .inner-card-title {
+  font-size: 10px;
+  letter-spacing: 1px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.adaptive-market-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.adaptive-readings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 12px 0;
+}
+.adaptive-readings div {
+  display: grid;
+  gap: 7px;
+}
+.adaptive-readings span {
+  font-size: 10px;
+  color: #aa8fa6;
+}
+.adaptive-readings strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.adaptive-content .action-red,
+.adaptive-content .action-outline {
+  min-height: 44px;
+}
+.adaptive-content button.inner-text-link {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.robot-settings {
+  background: #181020;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+}
+.emergency-control {
+  position: sticky;
+  top: 8px;
+  z-index: 18;
+  display: grid;
+  gap: 7px;
+  padding: 6px 0;
+  background: #0b0b14f5;
+}
+.emergency-stop-button {
+  border: 1px solid #b93e5e;
+  border-radius: 13px;
+  color: #ffd4dc;
+  background: #3d1325;
+  min-height: 44px;
+  padding: 11px 15px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  box-shadow: 0 4px 16px #0004;
+}
+.emergency-stop-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.emergency-notice {
+  color: #edbed0;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 0;
+}
+.engine-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(100%, 480px);
+  max-width: 100%;
+  height: 100svh;
+  max-height: 100svh;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #4d2949;
+  background: #100d18;
+  color: #f7f6f8;
+  border-radius: 22px 0 0 22px;
+  box-shadow: -20px 0 80px #0008;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.engine-drawer::backdrop {
+  background: #04020bba;
+  backdrop-filter: blur(4px);
+}
+.engine-drawer-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  align-items: start;
+  gap: 10px;
+  padding: 20px;
+  background: #16101f;
+  border-bottom: 1px solid #4e2947;
+}
+.engine-drawer-header h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+}
+.engine-drawer-header p {
+  margin: 5px 0 0;
+  color: #ba9db5;
+  font-size: 11px;
+}
+.drawer-close {
+  width: 44px;
+  height: 44px;
+  border: 1px solid #5e3854;
+  border-radius: 12px;
+  color: white;
+  background: #2d1b32;
+  font-size: 26px;
+  cursor: pointer;
+}
+.engine-drawer .is-compact {
+  grid-column: 1 / -1;
+  position: static;
+  background: transparent;
+  padding: 0;
+}
+.engine-drawer-content {
+  padding: 18px;
+}
+.engine-diagnostics {
+  display: grid;
+  gap: 14px;
+}
+.engine-diagnostics > .inner-card {
+  margin: 0;
+  padding: 17px;
+  border: 1px solid #42263f;
+  border-radius: 17px;
+  background: #201326;
+}
+.engine-diagnostics summary {
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 30px;
+  line-height: 1.6;
+}
+.engine-diagnostics p {
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.engine-diagnostics .inner-kv {
+  gap: 10px;
+  font-size: 11px;
+  align-items: flex-start;
+}
+.engine-diagnostics .inner-kv b {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.engine-diagnostics .inner-card-title {
+  font-size: 11px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.engine-diagnostics button {
+  min-height: 44px;
+}
+.engine-diagnostics .live-review {
+  border: 1px solid #c95070;
+  padding: 14px;
+  margin-top: 14px;
+  border-radius: 13px;
+}
+.engine-diagnostics .live-review h3 {
+  font-size: 15px;
+}
+.engine-diagnostics .live-review label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.engine-diagnostics .live-review input {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  accent-color: #f34f78;
+}
+.engine-drawer button:focus-visible,
+.engine-drawer summary:focus-visible,
+.engine-drawer input:focus-visible {
+  outline: 2px solid #ff91b2;
+  outline-offset: 4px;
+}
+@media (max-width: 370px) {
+  .adaptive-assistant {
+    gap: 12px;
+  }
+  .adaptive-avatar {
+    flex-basis: 66px;
+  }
+  .adaptive-avatar svg {
+    width: 66px;
+    height: 66px;
+  }
+  .adaptive-assistant h1 {
+    font-size: 19px;
+  }
+  .engine-drawer-content {
+    padding: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .engine-drawer::backdrop {
+    backdrop-filter: none;
+  }
+}
 .robot-stage {
   min-height: 100svh;
   background: radial-gradient(
@@ -478,7 +786,7 @@
 }
 .robot-nav {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border-top: 1px solid #212130;
   padding: 17px 8px max(22px, env(safe-area-inset-bottom));
   margin: 0 -25px;

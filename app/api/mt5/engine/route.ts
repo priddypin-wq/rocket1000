@@ -18,6 +18,8 @@ export const POST = (req: Request) =>
       engine = engineService(getDatabase());
     if (input?.action === "start" && Object.keys(input).length === 1)
       return analysisQueue(getDatabase()).start(uid);
+    if (input?.action === "start-analysis" && Object.keys(input).length === 1)
+      return analysisQueue(getDatabase()).start(uid, { analysisOnly: true });
     if (input?.action === "stop" && Object.keys(input).length === 1)
       return engine.stop(uid);
     if (

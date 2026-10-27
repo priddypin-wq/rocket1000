@@ -6,7 +6,6 @@ export default function BottomNav({ active = "" }: { active?: string }) {
         ["/", "⌂", "Home"],
         ["/dashboard", "▥", "Market"],
         ["/mt5", "⇄", "MT5"],
-        ["/settings", "⚙", "Settings"],
       ].map(([href, icon, label]) => (
         <Link
           key={href}

@@ -1,106 +1,64 @@
 "use client";
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { useState } from "react";
-import { mt5Api } from "../../lib/mt5-client";
+import { useEffect } from "react";
 import DeadpoolAvatar from "./deadpool-avatar";
 import BottomNav from "./bottom-nav";
-import { useOrders, brokerNumber } from "../../lib/use-orders";
+import EngineConfiguration from "./engine-configuration";
+import EmergencyStop from "./emergency-stop";
+import { useOrders, brokerNumber, brokerTime } from "../../lib/use-orders";
+import { useAnalysis } from "../../lib/use-workspace";
 import { useAnalysisEngine, engineLabel } from "../../lib/use-analysis-engine";
-import {
-  useAutonomousStatus,
-  automaticTradingLabel,
-} from "../../lib/use-scalping";
-
-function Icon({
-  children,
-  className = "",
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
 
 export default function RobotHome() {
-  const [busy, setBusy] = useState(false);
-  const [issue, setIssue] = useState("");
-  const { data, error, refresh } = useOrders();
+  const orders = useOrders();
+  const analysis = useAnalysis();
   const engine = useAnalysisEngine();
-  const autonomous = useAutonomousStatus();
-  const running =
-    engine.data?.state === "running" ||
-    engine.data?.state === "scheduled" ||
-    engine.data?.state === "verifying" ||
-    engine.pendingAction === "start";
-  const account = data?.account;
-  const symbol = data?.authorizedSymbols.map((s) => s.symbol).join(" · ");
-  const latest = data?.latestSignal;
-  const position = autonomous.data?.currentScalp;
-  const automaticStatus =
-    error || autonomous.error
-      ? "Unavailable"
-      : engine.data?.state === "verifying" || engine.pendingAction === "start"
-        ? "Verifying"
-        : autonomous.data?.state === "monitoring" && !autonomous.data.enabled
-          ? "Not authorized"
-          : automaticTradingLabel(autonomous.data?.state);
-  const assistantStatus =
-    error || autonomous.error
-      ? "Waiting for the server."
-      : autonomous.data?.state === "blocked"
-        ? "Risk protection activated. Waiting for safe conditions."
-        : position
-          ? "Monitoring your broker-confirmed position."
-          : autonomous.data?.state === "monitoring"
-            ? "OpenAI is monitoring verified market data."
-            : engine.data?.state === "verifying" ||
-                engine.pendingAction === "start"
-              ? "Verifying the AI and broker connection."
-              : engine.data?.state === "running"
-                ? "Analyzing the market."
-                : data?.automation?.waiting
-                  ? "Risk protection is waiting for safety checks."
-                  : engine.data?.state === "suspended"
-                    ? "AI suspended. Review the engine status."
-                    : running
-                      ? "Monitoring your connected EA."
-                      : data?.connection?.status === "Connected"
-                        ? "EA connected. AI paused."
-                        : "Waiting for your EA connection.";
-  async function emergencyStop() {
-    setBusy(true);
-    setIssue("");
-    try {
-      await mt5Api("stop", {});
-      await Promise.all([refresh(), autonomous.refresh(), engine.refresh()]);
-      setIssue(
-        "Emergency Stop confirmed. New orders stopped; existing positions remain open.",
-      );
-    } catch (e) {
-      setIssue(
-        e instanceof Error ? e.message : "Stop was not confirmed. Check MT5.",
-      );
-    } finally {
-      setBusy(false);
-    }
+  const account = orders.data?.account;
+  const market = analysis.data?.market;
+  const current =
+    !orders.error &&
+    !analysis.error &&
+    !!orders.data?.connection?.fresh &&
+    !!market?.fresh;
+  const result = analysis.data?.latest?.result;
+  const latest =
+    current &&
+    result &&
+    result.expiresAt > (analysis.data?.serverTime || 0) &&
+    result.symbol === market?.symbol
+      ? result
+      : null;
+  const frame = analysis.data?.profile?.frames?.M5;
+  const running = ["running", "scheduled", "verifying"].includes(
+    engine.data?.state || "",
+  );
+  const executionOn =
+    !engine.error &&
+    !orders.error &&
+    !!engine.data?.executionAuthorized &&
+    !!orders.data?.permissionActive;
+  const strategy = latest?.strategy;
+  const symbols = orders.data?.authorizedSymbols
+    .filter((s) => s.active && s.fresh)
+    .map((s) => s.symbol)
+    .join(" · ");
+  const issue = orders.error || analysis.error || engine.error;
+  const refreshOrders = orders.refresh;
+  const refreshEngine = engine.refresh;
+  useEffect(() => {
+    const refresh = () => {
+      void refreshOrders();
+      void refreshEngine();
+    };
+    window.addEventListener("rocket-trading-stopped", refresh);
+    return () => window.removeEventListener("rocket-trading-stopped", refresh);
+  }, [refreshOrders, refreshEngine]);
+  function openConfiguration() {
+    window.dispatchEvent(new Event("rocket-open-configuration"));
   }
   return (
     <div className="robot-stage">
-      <main className="robot-home">
+      <main className="robot-home adaptive-home">
         <header className="robot-top">
           <Link
             href="/"
@@ -109,397 +67,261 @@ export default function RobotHome() {
           >
             ROCKET<span>1000</span>
           </Link>
-          <Link
-            className="robot-settings"
-            href="/settings"
-            aria-label="Risk and strategy settings"
-          >
-            <Icon>
-              <path d="M4 7h16M4 17h16" />
-              <circle cx="8" cy="7" r="3" />
-              <circle cx="16" cy="17" r="3" />
-            </Icon>
-          </Link>
+          <EngineConfiguration />
         </header>
-        <section
-          className="robot-hero"
-          aria-label="ROCKET1000 Deadpool edition"
-        >
-          <div className="robot-orbit">
-            <DeadpoolAvatar className="robot-portrait" />
-            <span className="robot-edition">DEADPOOL EDITION</span>
+        <div className="adaptive-assistant">
+          <div className="adaptive-avatar">
+            <DeadpoolAvatar />
           </div>
-          <p className="robot-intro">Your trading robot</p>
-          <h1>
-            ROCKET1000 <span>AI</span>
-          </h1>
-          <p className="robot-powered">PRECISION. CONTROL. NO MERCY.</p>
-          <div className="robot-controls" aria-label="Robot controls">
-            <Link href="/mt5" className="robot-control">
-              <span className="robot-control-icon">
-                <Icon>
-                  <rect x="6" y="3" width="12" height="18" rx="2" />
-                  <path d="M10 17h4M10 6h4" />
-                </Icon>
-              </span>
-              <span>CONNECT</span>
-            </Link>
-            <Link href="/dashboard" className="robot-control">
-              <span className="robot-control-icon">
-                <Icon>
-                  <path d="M9 6h11M9 12h11M9 18h11" />
-                  <path d="M4 6h.01M4 12h.01M4 18h.01" strokeWidth="3" />
-                </Icon>
-              </span>
-              <span>ORDERS</span>
-            </Link>
+          <div>
+            <p className="robot-intro">DEADPOOL EDITION</p>
+            <h1>Your AI trading desk</h1>
+            <p className="deadpool-status" role="status">
+              {issue
+                ? "Waiting for a verified server update."
+                : !current
+                  ? "Waiting for fresh EA market data."
+                  : engine.data?.state === "suspended"
+                    ? "AI suspended. Check the connection."
+                    : running
+                      ? executionOn
+                        ? "Analyzing. Authorized risk checks remain active."
+                        : "Analyzing. Broker execution is off."
+                      : "EA data connected. Analysis is paused."}
+            </p>
           </div>
-          <p className="robot-lock">
-            <Icon>
-              <rect x="6" y="10" width="12" height="10" rx="2" />
-              <path d="M8 10V7a4 4 0 0 1 8 0v3" />
-            </Icon>{" "}
-            OpenAI trading · Verified MT5 data
-          </p>
-          <p className="deadpool-status" role="status">
-            {assistantStatus}
-          </p>
-          <button
-            className="action-red engine-start"
-            disabled={busy || (engine.busy && engine.pendingAction !== "start")}
-            onClick={() =>
-              void engine.action({ action: running ? "stop" : "start" })
-            }
+        </div>
+        <div className="adaptive-account" aria-label="Verified MT5 account">
+          <span>
+            {account
+              ? (account.brokerName || account.server) +
+                " · " +
+                account.login +
+                " · " +
+                account.type.toUpperCase()
+              : "Connect your MT5 account"}
+          </span>
+          <b>
+            {account
+              ? "Balance " +
+                brokerNumber(account.balance, 2) +
+                " · Equity " +
+                brokerNumber(account.equity, 2) +
+                " " +
+                (account.currency || "")
+              : "Account details appear after verification."}
+          </b>
+          <small>
+            {orders.error
+              ? "Update unavailable"
+              : orders.data?.connection?.status || "Checking connection"}
+          </small>
+        </div>
+        <EmergencyStop />
+        <div className="adaptive-content">
+          <section
+            className="inner-card adaptive-analysis"
+            aria-labelledby="live-analysis-title"
           >
-            {engine.busy && engine.pendingAction !== "start"
-              ? "STOPPING…"
-              : running
-                ? "STOP AUTO TRADING"
-                : "START AUTO TRADING"}
-          </button>
-          <p className="engine-start-caption">
-            Auto Trading is OFF until you enable it here. Starting verifies
-            OpenAI and MT5, then authorizes risk-approved broker orders for this
-            engine session. Stop prevents new analysis and orders.
-          </p>
-          {issue || autonomous.error || engine.error ? (
-            <div className="home-analysis-error" role="alert">
-              {issue || engine.error || autonomous.error}
-              <Link href="/settings#automation">
-                Check AI connection & account safety →
-              </Link>
+            <div className="inner-card-title">
+              <span id="live-analysis-title">AI LIVE ANALYSIS</span>
+              <span className="inner-tag">
+                {current ? engineLabel(engine.data?.state) : "DATA UNAVAILABLE"}
+              </span>
             </div>
-          ) : null}
-        </section>
-        <section
-          className="home-account inner-card"
-          aria-label="Verified account dashboard"
-        >
-          <div className="inner-card-title">
-            <span>YOUR MT5 ACCOUNT</span>
-            <span className="inner-tag">
-              {account?.type?.toUpperCase() || "NOT VERIFIED"}
-            </span>
-          </div>
-          <h2>
-            {account
-              ? account.brokerName || account.server
-              : "Connect your terminal"}
-          </h2>
-          <p className="inner-caption">
-            {account
-              ? `${account.login} · ${data?.connection?.status || "Disconnected"}`
-              : "Actual account details appear after EA verification."}
-          </p>
-          <div className="home-account-grid">
-            <div>
-              <span>Balance</span>
-              <strong>
-                {brokerNumber(account?.balance, 2)}{" "}
-                <small>{account?.currency}</small>
-              </strong>
+            <div className="adaptive-market-heading">
+              <h2>{current ? market.symbol : "Waiting for your EA"}</h2>
+              {current ? (
+                <span className="settings-status">LIVE BROKER DATA</span>
+              ) : null}
             </div>
-            <div>
-              <span>Equity</span>
-              <strong>
-                {brokerNumber(account?.equity, 2)}{" "}
-                <small>{account?.currency}</small>
-              </strong>
+            <div className="adaptive-readings">
+              <div>
+                <span>Direction</span>
+                <strong>
+                  {current && frame
+                    ? frame.trend.direction === "up"
+                      ? "Bullish"
+                      : frame.trend.direction === "down"
+                        ? "Bearish"
+                        : "Range"
+                    : "Unavailable"}
+                </strong>
+              </div>
+              <div>
+                <span>Volatility</span>
+                <strong>
+                  {current && frame?.atr14 != null
+                    ? "ATR " + brokerNumber(frame.atr14)
+                    : "Unavailable"}
+                </strong>
+              </div>
             </div>
-            <div>
-              <span>Daily P/L</span>
-              <strong>{brokerNumber(account?.dailyProfitLoss, 2)}</strong>
+            <p>
+              {latest?.reasoning ||
+                (!current
+                  ? "Connect your EA for current market observations. Stale data cannot authorize new orders."
+                  : analysis.data?.ai.error ||
+                    engine.data?.reason ||
+                    "Waiting for the next verified AI assessment.")}
+            </p>
+            {current && frame?.rsi14 != null ? (
+              <p className="inner-caption">
+                RSI {brokerNumber(frame.rsi14, 1)} · EMA{" "}
+                {brokerNumber(frame.ema9)} / {brokerNumber(frame.ema21)}
+              </p>
+            ) : null}
+            <p className="inner-caption">
+              Market update:{" "}
+              {current
+                ? brokerTime(market.timestamp)
+                : "No recent verified snapshot"}
+              {latest ? " · Analysis " + brokerTime(latest.analyzedAt) : ""}
+            </p>
+            {issue ? (
+              <p className="inner-error" role="alert">
+                {issue}
+              </p>
+            ) : null}
+            <div className="engine-actions">
+              <button
+                className="action-outline"
+                disabled={engine.busy}
+                onClick={() =>
+                  void engine.action({
+                    action: running ? "stop" : "start-analysis",
+                  })
+                }
+              >
+                {engine.busy
+                  ? "Updating…"
+                  : running
+                    ? "Pause AI"
+                    : "Resume Analysis"}
+              </button>
+              <button
+                className="inner-text-link"
+                type="button"
+                onClick={openConfiguration}
+              >
+                Connection details
+              </button>
             </div>
-            <div>
-              <span>Rocket1000 positions</span>
-              <strong>
-                {data && account
-                  ? data.positions.filter(
-                      (p) =>
-                        p.account.login === account.login &&
-                        p.account.server === account.server,
-                    ).length
-                  : "—"}
-              </strong>
+          </section>
+          <section
+            className="inner-card adaptive-strategy"
+            aria-labelledby="active-strategy-title"
+          >
+            <div className="inner-card-title">
+              <span id="active-strategy-title">ACTIVE STRATEGY</span>
+              <span className="inner-tag">ADAPTIVE AI</span>
             </div>
-          </div>
-          <div className="inner-kv">
-            <span>EA symbol</span>
-            <b>{symbol || "Waiting for EA"}</b>
-          </div>
-          <div className="inner-kv">
-            <span>Automatic trading</span>
-            <b>{automaticStatus}</b>
-          </div>
-          <div className="inner-kv">
-            <span>Active AI strategy</span>
-            <b className="scalp-capitalize">
-              {autonomous.error
-                ? "Unavailable"
-                : autonomous.data?.lastDecision &&
-                    autonomous.data.activeStrategy
-                  ? autonomous.data.activeStrategy
-                  : "Waiting for an OpenAI decision"}
-            </b>
-          </div>
-          <div className="inner-kv">
-            <span>Market direction</span>
-            <b className="scalp-capitalize">
-              {autonomous.error
-                ? "Unavailable"
-                : autonomous.data?.direction || "Waiting for fresh data"}
-            </b>
-          </div>
-          <div className="inner-kv">
-            <span>Market conditions</span>
-            <b className="scalp-capitalize">
-              {autonomous.error
-                ? "Unavailable"
-                : autonomous.data?.regime?.replaceAll("-", " ") ||
-                  "Not evaluated"}
-            </b>
-          </div>
-          <div className="inner-kv">
-            <span>Latest verified signal</span>
-            <b>
-              {latest
-                ? `${latest.symbol} · ${latest.decision}`
-                : "No current verified signal"}
-            </b>
-          </div>
-          <details className="settings-inline-details">
-            <summary>Verified trading performance</summary>
-            {data?.performance.available ? (
+            <h2 className="scalp-capitalize">
+              {strategy?.replaceAll("-", " ") || "Waiting for analysis"}
+            </h2>
+            <p>
+              {current
+                ? latest
+                  ? latest.entryConditions?.join(" · ") ||
+                    "Selected from the current verified market assessment."
+                  : "The AI evaluates suitable setups as fresh market data arrives."
+                : "Strategy selection needs fresh authenticated EA data."}
+            </p>
+            <div className="inner-kv">
+              <span>Automatic execution</span>
+              <b>{executionOn ? "Authorized" : "OFF"}</b>
+            </div>
+            <p className="inner-caption">
+              {executionOn
+                ? "Every instruction still passes account, broker and adaptive risk checks."
+                : "Analysis can run with execution OFF. Account authorization is required before orders."}
+            </p>
+            <button
+              className={executionOn ? "action-outline" : "action-red"}
+              disabled={engine.busy || !!issue}
+              onClick={() => {
+                if (
+                  !executionOn &&
+                  account?.type === "live" &&
+                  !orders.data?.liveConfirmed
+                )
+                  openConfiguration();
+                else
+                  void engine.action({
+                    action: executionOn ? "stop" : "start",
+                  });
+              }}
+            >
+              {engine.busy
+                ? "Verifying…"
+                : executionOn
+                  ? "Stop Auto Trading"
+                  : account?.type === "live" && !orders.data?.liveConfirmed
+                    ? "Review Live Authorization"
+                    : "Enable Auto Trading"}
+            </button>
+          </section>
+          <section
+            className="inner-card adaptive-signals"
+            aria-labelledby="next-signal-title"
+          >
+            <div className="inner-card-title">
+              <span id="next-signal-title">NEXT SIGNAL / OPEN ORDERS</span>
+              <span className="inner-tag">{latest?.decision || "WAITING"}</span>
+            </div>
+            {latest ? (
               <>
-                <div className="inner-kv">
-                  <span>Closed broker deals</span>
-                  <b>{data.performance.closedDeals ?? "—"}</b>
-                </div>
-                <div className="inner-kv">
-                  <span>Net realized P/L</span>
-                  <b>
-                    {brokerNumber(data.performance.netProfit, 2)}{" "}
-                    {data.performance.currency}
-                  </b>
+                <h2>
+                  {latest.symbol} · {latest.decision}
+                </h2>
+                <div className="adaptive-readings">
+                  <div>
+                    <span>Entry proposal</span>
+                    <strong>{brokerNumber(latest.entryPrice)}</strong>
+                  </div>
+                  <div>
+                    <span>Protective SL / TP</span>
+                    <strong>
+                      {brokerNumber(latest.stopLoss)} /{" "}
+                      {brokerNumber(latest.takeProfit)}
+                    </strong>
+                  </div>
                 </div>
                 <p className="inner-caption">
-                  Based on verified Rocket1000 broker deals shown, up to 100.
-                  This is an observed history summary, not an all-time result.
+                  Analysis proposal · {brokerTime(latest.analyzedAt)}
                 </p>
               </>
             ) : (
-              <p>Waiting for verified Rocket1000 broker deal history.</p>
+              <p>No current confirmed trading setup.</p>
             )}
-          </details>
-          {error ? (
-            <p className="inner-error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <div className="home-trading-actions home-emergency-action">
-            <button
-              className="action-red"
-              disabled={busy}
-              onClick={() => void emergencyStop()}
-            >
-              Emergency Stop
-            </button>
-          </div>
-        </section>
-        <section
-          className="inner-card scalp-summary"
-          aria-labelledby="scalp-title"
-        >
-          <div className="inner-card-title">
-            <span id="scalp-title">CURRENT POSITION</span>
-            <span className="inner-tag">
-              {position ? "BROKER CONFIRMED" : "NO OPEN POSITION"}
-            </span>
-          </div>
-          {position ? (
-            <>
-              <div className="order-heading">
-                <h2>{position.symbol}</h2>
-                <span
-                  className={`order-side ${position.side === "BUY" ? "is-buy" : "is-sell"}`}
-                >
-                  {position.side}
-                </span>
-              </div>
-              <p className="order-ticket">
-                Ticket {position.ticket} · {brokerNumber(position.volume, 8)}{" "}
-                lots
-              </p>
-              {autonomous.error ? (
-                <p className="order-attention" role="status">
-                  Last received broker snapshot. Current position state could
-                  not be refreshed.
-                </p>
-              ) : null}
-              <div className="order-values">
-                <div>
-                  <span>Entry</span>
-                  <strong>{brokerNumber(position.entry)}</strong>
-                </div>
-                <div>
-                  <span>Current broker price</span>
-                  <strong>{brokerNumber(position.currentPrice)}</strong>
-                </div>
-                <div>
-                  <span>Stop-loss</span>
-                  <strong>{brokerNumber(position.stop)}</strong>
-                </div>
-                <div>
-                  <span>Take-profit</span>
-                  <strong>{brokerNumber(position.takeProfit)}</strong>
-                </div>
-                <div>
-                  <span>Floating P/L</span>
-                  <strong
-                    className={
-                      position.profit < 0 ? "value-loss" : "value-profit"
-                    }
-                  >
-                    {brokerNumber(position.profit, 2)} {account?.currency}
-                  </strong>
-                </div>
-              </div>
-            </>
-          ) : (
-            <p>
-              {!autonomous.data
-                ? "Checking verified broker positions…"
-                : autonomous.data.state === "monitoring"
-                  ? "Patiently waiting for a confirmed setup."
-                  : "No verified Rocket1000 position is open."}
-            </p>
-          )}
-          <div className="inner-kv">
-            <span>Daily P/L</span>
-            <b>
-              {brokerNumber(autonomous.data?.dailyPnl, 2)} {account?.currency}
-            </b>
-          </div>
-          <div className="inner-kv">
-            <span>Completed trades</span>
-            <b>{autonomous.data?.completedScalps ?? "—"}</b>
-          </div>
-          <div className="inner-kv">
-            <span>Risk protection</span>
-            <b>
-              {autonomous.error
-                ? "Status unavailable"
-                : autonomous.data?.risk.blocked
-                  ? "Safety hold"
-                  : autonomous.data
-                    ? "Checks enforced"
-                    : "Checking"}
-            </b>
-          </div>
-          {autonomous.data?.lastDecision ? (
-            <p className="inner-caption">
-              {autonomous.data.lastDecision.decision} ·{" "}
-              {autonomous.data.lastDecision.reasoning}
-            </p>
-          ) : null}
-          {autonomous.data?.risk.reasons.length ? (
-            <details className="settings-inline-details">
-              <summary>Why trading is waiting</summary>
-              {autonomous.data.risk.reasons.map((reason) => (
-                <p key={reason}>{reason}</p>
-              ))}
-            </details>
-          ) : null}
-          {autonomous.data?.lastError ? (
-            <p className="inner-error" role="alert">
-              {autonomous.data.lastError}
-            </p>
-          ) : null}
-          <Link className="inner-text-link" href="/dashboard">
-            Open orders & verified results →
-          </Link>
-        </section>
-        <section
-          className="inner-card engine-activity"
-          aria-label="AI engine activity"
-        >
-          <div className="inner-card-title">
-            <span>OPENAI ENGINE ACTIVITY</span>
-            <span className="inner-tag">
-              {engineLabel(
-                engine.pendingAction === "start"
-                  ? "verifying"
-                  : engine.data?.state,
-              ).toUpperCase()}
-            </span>
-          </div>
-          <p>
-            {engine.data?.reason ||
-              (engine.pendingAction === "start" ||
-              engine.data?.state === "verifying"
-                ? "Verifying access before scheduling analysis."
-                : engine.data?.state === "scheduled" ||
-                    engine.data?.state === "running"
-                  ? "Monitoring authenticated EA market data."
-                  : "Verify the server OpenAI connection, connect MT5, then press START AUTO TRADING. Every strategy decision comes from OpenAI; deterministic risk checks and broker-side protective stops remain independent.")}
-          </p>
-          <div className="inner-kv">
-            <span>Last analysis cycle</span>
-            <b>
-              {engine.data?.lastCycle
-                ? new Date(engine.data.lastCycle).toLocaleString()
-                : "Not run yet"}
-            </b>
-          </div>
-          <div className="inner-kv">
-            <span>Background service</span>
-            <b>
-              {engine.data?.scheduler?.configured
-                ? engine.data.scheduler.mode
-                : "Setup required"}
-            </b>
-          </div>
-          {engine.data?.usage ? (
             <div className="inner-kv">
-              <span>Estimated API usage today</span>
+              <span>Broker-confirmed open orders</span>
               <b>
-                ${engine.data.usage.estimatedUsd.toFixed(4)} / $
-                {engine.data.usage.dailyBudgetUsd.toFixed(2)}
+                {orders.data && !orders.error
+                  ? orders.data.positions.length
+                  : "—"}
               </b>
             </div>
-          ) : null}
-          {latest ? (
+            {orders.data?.brokerPending.length ? (
+              <div className="inner-kv">
+                <span>Broker-pending orders</span>
+                <b>{orders.data.brokerPending.length}</b>
+              </div>
+            ) : null}
             <p className="inner-caption">
-              {latest.symbol} · {latest.decision} · {latest.reasoning}
+              {symbols || "No fresh connected EA symbol."}
             </p>
-          ) : null}
-          <Link className="inner-text-link" href="/dashboard">
-            Analysis, signals & results →
-          </Link>
-        </section>
-        <div className="robot-bottom-space">
-          <span className="robot-small-line" />
-          <p>YOUR EDGE. YOUR RULES.</p>
+            {running &&
+            engine.data?.scheduler?.configured &&
+            engine.data.nextCycle ? (
+              <p className="inner-caption">
+                Next scheduled analysis: {brokerTime(engine.data.nextCycle)}
+              </p>
+            ) : null}
+            <Link className="inner-text-link" href="/dashboard">
+              View verified orders & results →
+            </Link>
+          </section>
         </div>
         <BottomNav active="Home" />
       </main>

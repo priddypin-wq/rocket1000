@@ -215,3 +215,34 @@ test("entry loss and position-count limits do not prevent an authorized risk-red
     /permission/,
   );
 });
+
+test("AI range position protection remains available after range-entry conditions disappear", () => {
+  const ctx = context(),
+    p = ctx.market.positions[0];
+  const signal = {
+    source: "ai",
+    engineVersion: ENGINE_VERSION,
+    signalExpiresAt: NOW + 60000,
+    signalBarTime: decisionBar(ctx.market),
+    signalStrategy: "range",
+  };
+  assert.equal(
+    orderRisk(ctx, { ...signal, kind: "CLOSE", position: p.ticket }).kind,
+    "CLOSE",
+  );
+  assert.equal(
+    orderRisk(ctx, {
+      ...signal,
+      kind: "MODIFY",
+      position: p.ticket,
+      stop: 2099.2,
+      takeProfit: p.takeProfit,
+    }).kind,
+    "MODIFY",
+  );
+  ctx.permissionActive = false;
+  assert.throws(
+    () => orderRisk(ctx, { ...signal, kind: "CLOSE", position: p.ticket }),
+    /permission/,
+  );
+});

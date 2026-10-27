@@ -6,6 +6,7 @@ import {
   market,
   terminal,
   seedAnalysisEngineFixture,
+  approveFixtureLive,
 } from "./helpers.mjs";
 import {
   demoValidation,
@@ -442,32 +443,26 @@ test("Live acknowledgements never satisfy the Demo acceptance requirement", asyn
   }
 });
 
-test("Legacy Demo validation is diagnostic only; a current bound engine controls either account type", async () => {
-  const f = await setup("live");
-  try {
-    for (const action of ["prepare-live", "confirm-live"])
-      await assert.rejects(
-        f.trade.act("alice", { action }),
-        (e) => e.status === 410 && e.code === "UNIFIED_AI_CONTROL",
-      );
-    await assert.rejects(
-      f.trade.act("alice", { action: "start-auto", accountKey: f.key() }),
-      /START AI/,
-    );
-    await seedAnalysisEngineFixture(f);
-    await f.trade.act("alice", { action: "start-auto", accountKey: f.key() });
-    assert.equal((await f.status()).permissionActive, true);
-    assert.equal((await demoValidation(f.db, "alice")).passed, false);
-    await f.switch({ accountLogin: "87654321" });
-    assert.equal((await f.status()).permissionActive, false);
-    await assert.rejects(
-      f.trade.act("alice", { action: "start-auto", accountKey: f.key() }),
-      /START AI/,
-    );
-  } finally {
-    await f.db.close();
-  }
+test("Demo validation is diagnostic; Live also requires exact current-engine account authorization",async()=>{
+ const f=await setup("live");try{
+  const review=await f.trade.act("alice",{action:"prepare-live"});
+  await f.trade.act("alice",{action:"confirm-live",id:review.id,accountKey:review.accountKey});
+  assert.equal((await f.status()).permissionActive,false);
+  await assert.rejects(f.trade.act("alice",{action:"start-auto",accountKey:f.key()}),/START AI/);
+  await seedAnalysisEngineFixture(f);
+  await f.trade.act("alice",{action:"start-auto",accountKey:f.key()});
+  assert.equal((await f.status()).permissionActive,true);
+  assert.equal((await demoValidation(f.db,"alice")).passed,false);
+  await f.switch({accountLogin:"87654321"});
+  assert.equal((await f.status()).permissionActive,false);
+  await seedAnalysisEngineFixture(f);
+  await assert.rejects(f.trade.act("alice",{action:"start-auto",accountKey:f.key()}),e=>e.code==="LIVE_AUTHORIZATION_REQUIRED");
+  await approveFixtureLive(f.trade);
+  await f.trade.act("alice",{action:"start-auto",accountKey:f.key()});
+  assert.equal((await f.status()).permissionActive,true);
+ }finally{await f.db.close();}
 });
+
 test("Legacy saved permission without a current authenticated AI run cannot dispatch", async () => {
   const f = await setup("live");
   try {

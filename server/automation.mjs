@@ -140,7 +140,7 @@ export function automationService(
           await tx.query(
             "UPDATE rocket_automation SET last_error=? WHERE connection_id=?",
             [
-              "Install ROCKET1000 EA 6.00 and verify the current engine before restarting automatic trading.",
+              "Install ROCKET1000 EA 7.00 and verify the current engine before restarting automatic trading.",
               ctx.c.id,
             ],
           );

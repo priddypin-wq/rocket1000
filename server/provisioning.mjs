@@ -416,7 +416,13 @@ export function provisioningService(
             "UPDATE rocket_engine_activation SET generation=?,lease_until=0,next_attempt=0,reason=CASE WHEN paused=1 THEN reason ELSE 'Verifying the newly connected broker account.' END WHERE connection_id=?",
             [randomUUID(), i.connection_id],
           );
-          await revokeLiveActivation(tx, i.user_id, now());
+          // A different account never inherits execution permission. Preserve
+          // completed, account-specific consent for a future explicit Start on
+          // that same account; an in-progress review belongs to the old session.
+          await tx.query(
+            "UPDATE rocket_live_approvals SET expires_at=? WHERE user_id=? AND used_at IS NULL",
+            [now(), i.user_id],
+          );
           await tx.query(
             "DELETE FROM rocket_market_snapshots WHERE connection_id=?",
             [i.connection_id],
