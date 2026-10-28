@@ -18,6 +18,11 @@ import {
 import { freezeCommandAccounts } from "./trade-settings.mjs";
 import { accountKey } from "./trade-settings.mjs";
 import { synchronizeOwnedBrokerState } from "./orders-dashboard.mjs";
+import { bindEaConnection } from "./ea-connection-binding.mjs";
+import {
+  connectionHealth,
+  CONNECTION_TIMEOUT_MS,
+} from "./connection-health.mjs";
 import {
   disableTrading,
   pauseForReconnect,
@@ -30,7 +35,7 @@ const sha = (value) => createHash("sha256").update(value).digest("hex");
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ttl = 90 * 24 * 60 * 60 * 1000;
-export const HEARTBEAT_TIMEOUT_MS = 90000;
+export const HEARTBEAT_TIMEOUT_MS = CONNECTION_TIMEOUT_MS;
 
 // Never infer this from Host/X-Forwarded-Host or a submitted download URL.
 export function backendOrigin(env = process.env) {
@@ -258,27 +263,11 @@ export function provisioningService(
           "SELECT * FROM rocket_direct_installations WHERE connection_id=? ORDER BY CASE WHEN revoked_at IS NULL THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1",
           [c.id],
         );
-        let status = "Disconnected";
-        if (i) {
-          if (
-            i.revoked_at ||
-            Number(i.expires_at) <= now() ||
-            i.last_error === "AUTHENTICATION_FAILED"
-          )
-            status = "Authentication Failed";
-          else if (i.last_error === "ACCOUNT_MISMATCH")
-            status = "Account Mismatch";
-          else if (
-            i.last_heartbeat &&
-            now() - Number(i.last_heartbeat) <= HEARTBEAT_TIMEOUT_MS
-          )
-            status = "Connected";
-          else if (
-            !i.registered_at &&
-            now() - Number(i.created_at) <= HEARTBEAT_TIMEOUT_MS
-          )
-            status = "Connecting";
-        }
+        const [execution] = await db.query(
+          "SELECT * FROM rocket_execution WHERE connection_id=?",
+          [c.id],
+        );
+        const { status } = connectionHealth(c, i, execution, now());
         return {
           id: c.id,
           label: c.label,
@@ -364,7 +353,9 @@ export function provisioningService(
       )
         return { error: [401, "Credential rejected", "AUTHENTICATION_FAILED"] };
       if (i.revoked_at || Number(i.expires_at) <= now()) {
-        await disableTrading(tx, i.connection_id, now());
+        // An old, explicitly revoked package cannot interrupt its replacement.
+        // Expiry of the current installation still stops its own execution.
+        if (!i.revoked_at) await disableTrading(tx, i.connection_id, now());
         await tx.query(
           "UPDATE rocket_direct_installations SET last_error=?,last_error_at=? WHERE id=?",
           ["AUTHENTICATION_FAILED", now(), id],
@@ -399,6 +390,7 @@ export function provisioningService(
         typeof input.brokerConnected !== "boolean"
       )
         throw new ApiError(400, "Invalid terminal telemetry");
+      await bindEaConnection(tx, i, input, now(), { register });
       if (
         i.expected_login !== null &&
         (input.accountLogin !== i.expected_login ||

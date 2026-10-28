@@ -216,8 +216,17 @@ for (const label of [
       const c = await f.send();
       assert.equal(c.command, "TRADE");
       if (label === "reconnect") await f.send({}, true);
-      if (label === "new session")
-        await f.send({ terminalSession: "abcdef0123456789abcdef01" });
+      if (label === "new session") {
+        await assert.rejects(
+          f.send({ terminalSession: "abcdef0123456789abcdef01" }),
+          (e) => e.code === "EA_CONNECTION_REGISTRATION_REQUIRED",
+        );
+        assert.equal(
+          (await f.trade.status("alice")).orders[0].status,
+          "claimed",
+        );
+        await f.send({ terminalSession: "abcdef0123456789abcdef01" }, true);
+      }
       if (label === "revoke") await f.service.revoke("alice", f.id);
       if (label === "rotation") {
         await f.service.revoke("alice", f.id);
@@ -338,18 +347,33 @@ test("unknown broker outcome blocks new orders and is never automatically retrie
     await f.db.close();
   }
 });
-test("old telemetry protocol can never receive orders and registration disables permission", async () => {
+test("old telemetry cannot replace a modern connection or revoke its permission", async () => {
   const f = await setup();
   try {
     await f.enable();
-    const r = await f.service.telemetry(
-      f.token,
-      { ...terminal, accountType: "demo", market: market(f.now()) },
-      true,
+    const original = await f.db.query(
+      "SELECT * FROM rocket_execution WHERE connection_id=?",
+      [f.id],
     );
+    await assert.rejects(
+      f.service.telemetry(
+        f.token,
+        { ...terminal, accountType: "demo", market: market(f.now()) },
+        true,
+      ),
+      (e) => e.code === "EA_CONNECTION_PROTOCOL_REQUIRED",
+    );
+    assert.deepEqual(
+      await f.db.query("SELECT * FROM rocket_execution WHERE connection_id=?", [
+        f.id,
+      ]),
+      original,
+    );
+    assert.equal((await f.trade.status("alice")).enabled, true);
+    const r = await f.send();
     assert.equal(r.command, "NONE");
-    assert.equal(r.tradingEnabled, false);
-    assert.equal((await f.trade.status("alice")).enabled, false);
+    assert.equal(r.ok, true);
+    assert.equal((await f.trade.status("alice")).orders.length, 0);
   } finally {
     await f.db.close();
   }

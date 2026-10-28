@@ -14,6 +14,7 @@ import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { validateAssessment } from "./ai-analysis.mjs";
 import { configuredModel, isConfiguredModel } from "./ai-provider.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
+import { connectionHealth } from "./connection-health.mjs";
 
 // Called only after credential/account validation, inside the telemetry lock.
 export async function synchronizeOwnedBrokerState(tx, i, input, now) {
@@ -151,7 +152,7 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
     const trading = await tradingService(db, { now }).status(uid);
     return db.transaction(async (tx) => {
       const [i] = await tx.query(
-        "SELECT * FROM rocket_direct_installations WHERE connection_id=? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM rocket_direct_installations WHERE connection_id=? ORDER BY CASE WHEN revoked_at IS NULL THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1",
         [c.id],
       );
       const [e] = await tx.query(
@@ -171,28 +172,10 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         c.expected_server,
         c.expected_type,
       );
-      const identity =
-        i?.registered_at &&
-        i.account_login === c.expected_login &&
-        i.broker_server === c.expected_server &&
-        i.account_type === c.expected_type;
-      const fresh = !!(
-        identity &&
-        !i.last_error &&
-        Number(i.expires_at) > now() &&
-        i.last_heartbeat &&
-        now() - Number(i.last_heartbeat) <= 30000 &&
-        e?.installation_id === i.id &&
-        now() - Number(e.received_at) <= 30000
-      );
-      let execution = null,
-        market = null;
-      try {
-        if (e?.installation_id === i?.id)
-          execution = validateExecution(JSON.parse(e.payload));
-      } catch {
-        /* Never display malformed broker telemetry. */
-      }
+      const connectionState = connectionHealth(c, i, e, now());
+      const { identity, execution } = connectionState;
+      const fresh = connectionState.fresh && !!execution;
+      let market = null;
       try {
         if (
           marketRow?.installation_id === i?.id &&
@@ -508,15 +491,9 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         serverTime: now(),
         connection: {
           id: c.id,
-          status: fresh
-            ? "Connected"
-            : i?.last_error === "ACCOUNT_MISMATCH"
-              ? "Account Mismatch"
-              : i?.last_error === "AUTHENTICATION_FAILED"
-                ? "Authentication Failed"
-                : "Disconnected",
+          status: connectionState.status,
           fresh,
-          lastHeartbeat: i?.last_heartbeat ? Number(i.last_heartbeat) : null,
+          lastHeartbeat: connectionState.lastHeartbeat,
         },
         account,
         accountKey: key,

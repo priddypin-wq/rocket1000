@@ -72,6 +72,20 @@ export async function initializeBrowser(req) {
     );
   });
 }
+// A read-only probe lets clients reuse the shared HttpOnly browser identity
+// without issuing another cookie or creating a second connection.
+export async function browserSessionStatus(req) {
+  return handle(async () => {
+    const session = await browserSessions(getDatabase()).read(req);
+    if (!session)
+      throw new ApiError(
+        401,
+        "Initialize this browser's private connection.",
+        "BROWSER_SESSION_REQUIRED",
+      );
+    return { ok: true };
+  });
+}
 export async function handle(fn) {
   try {
     const data = await fn();

@@ -333,16 +333,33 @@ test("Emergency Stop revokes authorization independently of paid AI and leaves p
   }
 });
 
-test("different persistent terminal cannot inherit reconnect authorization", async () => {
+test("different persistent terminal cannot inherit or revoke the original reconnect authorization", async () => {
   const f = await setup();
   try {
     await f.start();
-    await f.send(
-      { execution: { ...execution, terminalId: "abcdef0123456789abcdef01" } },
-      true,
+    const original = await f.db.query(
+      "SELECT * FROM rocket_execution WHERE connection_id=?",
+      [f.id],
     );
-    assert.equal((await f.trade.status("alice")).permissionActive, false);
-    assert.equal(await f.count("rocket_trade_policy"), 0);
+    await assert.rejects(
+      f.send(
+        { execution: { ...execution, terminalId: "abcdef0123456789abcdef01" } },
+        true,
+      ),
+      (e) => e.code === "EA_CONNECTION_IN_USE",
+    );
+    assert.deepEqual(
+      await f.db.query("SELECT * FROM rocket_execution WHERE connection_id=?", [
+        f.id,
+      ]),
+      original,
+    );
+    assert.equal((await f.trade.status("alice")).permissionActive, true);
+    assert.equal(await f.count("rocket_trade_policy"), 1);
+    const heartbeat = await f.send();
+    assert.equal(heartbeat.ok, true);
+    assert.equal(heartbeat.command, "NONE");
+    assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {
     await f.db.close();
   }

@@ -352,7 +352,7 @@ test("analysis requires connection and fresh candles; results stay private and r
     f.advance(60001);
     await assert.rejects(
       () => service.start("alice"),
-      (e) => e.code === "MARKET_DATA_STALE",
+      (e) => e.code === "MT5_NOT_CONNECTED",
     );
     assert.equal((await service.status("alice")).market.fresh, false);
   } finally {

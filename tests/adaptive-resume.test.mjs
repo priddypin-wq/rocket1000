@@ -164,19 +164,34 @@ for (const type of ["demo", "live"]) {
     });
 }
 
-test("a new persistent terminal cannot reuse the prior enabled execution intent", async () => {
+test("a new persistent terminal cannot replace the connection or steal its recovery intent", async () => {
   const f = await setup();
   try {
     await f.start();
     await f.interrupt();
-    await f.send(
-      { execution: { ...execution, terminalId: "abcdef0123456789abcdef01" } },
-      true,
+    const original = await f.db.query(
+      "SELECT * FROM rocket_execution WHERE connection_id=?",
+      [f.id],
     );
-    const state = await f.engine.autoStart("alice");
-    assert.equal(state.executionAuthorized, false);
+    await assert.rejects(
+      f.send(
+        { execution: { ...execution, terminalId: "abcdef0123456789abcdef01" } },
+        true,
+      ),
+      (e) => e.code === "EA_CONNECTION_IN_USE",
+    );
+    assert.deepEqual(
+      await f.db.query("SELECT * FROM rocket_execution WHERE connection_id=?", [
+        f.id,
+      ]),
+      original,
+    );
     assert.equal(await f.count("rocket_trade_policy"), 0);
-    assert.equal(state.mode, "analysis");
+    const state = await f.engine.autoStart("alice");
+    assert.equal(state.executionAuthorized, true);
+    assert.equal(await f.count("rocket_trade_policy"), 1);
+    assert.equal(state.mode, "execution");
+    assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {
     await f.db.close();
   }

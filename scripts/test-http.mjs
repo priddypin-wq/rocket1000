@@ -198,8 +198,33 @@ try {
     403,
   );
   passed("cross-origin session creation rejected");
+  const anonymousSession = await request("/api/mt5/session");
+  assert.equal(anonymousSession.status, 401);
+  assert.equal(
+    (await anonymousSession.json()).code,
+    "BROWSER_SESSION_REQUIRED",
+  );
+  assert.equal(anonymousSession.headers.getSetCookie().length, 0);
+  passed("read-only session probe never creates an anonymous connection");
   const alice = await initialize();
   const bob = await initialize();
+  const sessionsBeforeProbe = await db.query(
+    "SELECT token_hash,workspace_id FROM rocket_browser_sessions ORDER BY workspace_id",
+  );
+  const existingSession = await request("/api/mt5/session", { cookie: alice });
+  assert.equal(existingSession.status, 200);
+  assert.deepEqual(await existingSession.json(), { ok: true });
+  assert.equal(existingSession.headers.getSetCookie().length, 0);
+  assert.ok(existingSession.headers.get("cache-control").includes("no-store"));
+  assert.deepEqual(
+    await db.query(
+      "SELECT token_hash,workspace_id FROM rocket_browser_sessions ORDER BY workspace_id",
+    ),
+    sessionsBeforeProbe,
+  );
+  passed(
+    "session reuse preserves the existing private identity and credential",
+  );
   for (const [path, body] of [
     ["openai", { action: "save", key: "fixture-never-an-api-key" }],
     ["engine", { action: "start" }],
@@ -437,6 +462,18 @@ try {
     await request("/api/mt5/connections", { cookie: alice })
   ).json();
   assert.equal(again.connections[0].id, id);
+  const pageConnection = await Promise.all(
+    ["/", "/dashboard", "/mt5"].map(async (path) => {
+      assert.equal((await request(path, { cookie: alice })).status, 200);
+      const state = await (
+        await request("/api/mt5/connections", { cookie: alice })
+      ).json();
+      assert.equal(state.connections.length, 1);
+      return state.connections[0].id;
+    }),
+  );
+  assert.deepEqual(pageConnection, [id, id, id]);
+  passed("Home, Market and MT5 reuse exactly one private connection");
   passed(
     "connection allocated automatically; unverified URL and download stay unavailable",
   );
@@ -518,6 +555,9 @@ try {
     brokerConnected: true,
     eaProtocol: 4,
     terminalSession: "abcdef0123456789abcdef01",
+    chartSymbol: "XAUUSD",
+    authorizedSymbols: ["XAUUSD"],
+    instanceId: "0123456789abcdef01234567abcd",
     execution: {
       protocol: 4,
       engineVersion: ENGINE_VERSION,
@@ -564,6 +604,46 @@ try {
   assert.ok(!JSON.stringify(data).includes(token));
   passed(
     "first EA registration binds account and reports a real server-received heartbeat",
+  );
+  for (const patch of [
+    { instanceId: "0123456789abcdef01234567eeee" },
+    {
+      execution: {
+        ...telemetry.execution,
+        terminalId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+      instanceId: "aaaaaaaaaaaaaaaaaaaaaaaaffff",
+      accountLogin: "87654321",
+    },
+  ]) {
+    const conflict = await request("/api/ea/register", {
+      headers,
+      body: { ...telemetry, ...patch, market: market(Date.now()) },
+    });
+    assert.equal(conflict.status, 409, await conflict.clone().text());
+    assert.equal((await conflict.json()).code, "EA_CONNECTION_IN_USE");
+  }
+  const preservedConnection = await (
+    await request("/api/mt5/connections", { cookie: alice })
+  ).json();
+  assert.equal(preservedConnection.connections.length, 1);
+  assert.equal(preservedConnection.connections[0].id, id);
+  assert.equal(preservedConnection.connections[0].status, "Connected");
+  assert.equal(
+    preservedConnection.connections[0].installation.accountLogin,
+    "12345678",
+  );
+  assert.equal(
+    (
+      await request("/api/ea/heartbeat", {
+        headers,
+        body: { ...telemetry, market: market(Date.now()) },
+      })
+    ).status,
+    200,
+  );
+  passed(
+    "competing EA copies cannot replace or interrupt the authenticated MT5 connection",
   );
   const ownerOrders = await (
     await request("/api/mt5/orders", { cookie: alice })

@@ -11,6 +11,7 @@ import { markManagedPositions } from "./position-ownership.mjs";
 import { runtimeAiEnvironment } from "./ai-auth.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
 import { openaiCredentialService } from "./openai-credentials.mjs";
+import { recentConnectionTimestamp } from "./connection-health.mjs";
 export function analysisService(
   db,
   {
@@ -83,13 +84,25 @@ export function analysisService(
       [connection.id],
     );
     const valid = s && s.installation_id === connection.installation?.id;
-    const market = valid
-      ? {
-          ...JSON.parse(s.payload),
+    let market = null;
+    if (valid) {
+      try {
+        const snapshot = validateSnapshot(
+          JSON.parse(s.payload),
+          Number(s.received_at),
+        );
+        market = {
+          ...snapshot,
           receivedAt: Number(s.received_at),
-          fresh: now() - Number(s.received_at) <= 30000,
-        }
-      : null;
+          fresh:
+            connection.status === "Connected" &&
+            recentConnectionTimestamp(s.received_at, now()) &&
+            recentConnectionTimestamp(snapshot.timestamp, now()),
+        };
+      } catch {
+        // A malformed snapshot cannot become live data on another page.
+      }
+    }
     const { settings } = await tradeSettings(db, connection.id);
     const entry = (row) =>
       row
