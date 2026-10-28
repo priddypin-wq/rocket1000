@@ -1,8 +1,8 @@
 # ROCKET1000
 
-Existing Next.js dashboard and MQL5 EA upgraded on `codex/professional-auto-trading-upgrade`. The original dark-purple/pink design, Deadpool assistant, private browser ownership and existing HTTPS MT5 connection are preserved. **Approved source commit `4386d65` is deployed at https://rocket1000.vercel.app with Auto Trading OFF.** Genuine broker execution is not yet production-qualified. See the [27 October deployment record](DEPLOYMENT-2026-10-27.md) for actual production checks and the OpenAI billing blocker.
+Existing Next.js dashboard and MQL5 EA upgraded on `codex/professional-auto-trading-upgrade`. The original dark-purple/pink design, Deadpool assistant, private browser ownership and existing HTTPS MT5 connection are preserved. **Source commit `75af6ce` is deployed at https://rocket1000.vercel.app with Auto Trading OFF.** Software checks and hosted verification pass; genuine paid AI and broker execution still need external acceptance. See the [28 October deployment record](DEPLOYMENT-2026-10-28.md).
 
-**Current review changes use engine `rocket-ai-7` / EA 7.00 and are not deployed.** See [adaptive upgrade verification](ADAPTIVE-UPGRADE-VERIFICATION.md). Keep the installed EA matched to its backend; the production engine 6 download remains the correct artifact until a matching upgrade is approved.
+**Production now uses engine `rocket-ai-7` / EA 7.00.** Download the matching EA from MT5 and follow [activation readiness](ACTIVATION-READINESS.md). The earlier engine 6 release remains a rollback target. PR #4 is still unmerged.
 
 ## Account and execution workflow
 
@@ -12,7 +12,7 @@ Existing Next.js dashboard and MQL5 EA upgraded on `codex/professional-auto-trad
 4. Fresh authenticated EA data automatically initializes analysis through a verified Queue callback or supervised worker. This creates no trading permission. Use **Enable Auto Trading** once for the current account; Live additionally requires the bounded exact-account/current-engine review in the gear drawer. The backend verifies OpenAI, the real scheduler, account/symbol and execution safety. Both account types use the same engine; eligible automatic orders need no individual confirmation.
 5. **Stop Auto Trading**, **Pause AI** and the separate **Emergency Stop** persist OFF across restarts and reconnections. Existing positions stay open. An enabled same-account/installation/terminal/engine session can recover after readiness verification and broker reconciliation. Account switching never transfers execution; previously completed Live reviews are retained for their exact account and engine until revoked. The operator `ROCKET_DISABLE_LIVE_ORDERS=1` independently blocks Live execution.
 
-No production execution was activated and no Live development orders were placed. Genuine Demo entry, modification and exit remain required acceptance work. The 25 October authentication repair was verified against the existing production EA 5 installation; the engine 6 source/binary must be released with its matching backend.
+No production execution was activated and no broker orders were placed by this release. Genuine Demo entry, modification and exit remain required acceptance work. Backend and downloadable EA 7 now match; installing/attaching the EA and funding/testing the real API are external setup steps.
 
 ## Real data and AI
 

@@ -1,6 +1,6 @@
 # ROCKET1000 adaptive analysis and dual-account recovery
 
-Review date: 27 October 2026, Africa/Johannesburg. Branch: `codex/professional-auto-trading-upgrade`, draft PR #4. These changes are **not deployed or merged**. Production remains the separately approved engine 6 release (`4386d65`); this review uses **engine `rocket-ai-7`, EA 7.00**. No production configuration, account activation or broker order was changed by this task.
+Original review: 27 October 2026, Africa/Johannesburg. Branch: `codex/professional-auto-trading-upgrade`, draft PR #4. The implementation and final activation-readiness repairs were subsequently **released on 28 October**, source `75af6ce`, engine `rocket-ai-7` / EA 7.00. The PR remains unmerged. See [the deployment record](DEPLOYMENT-2026-10-28.md) for hosted results and release safety; the test counts below describe the earlier review. No broker orders or Live activation were performed.
 
 ## Implemented behavior
 
@@ -40,7 +40,7 @@ Local logs and screenshots are in ignored `work/adaptive-*` files, including `ad
 ## Remaining qualification and manual steps
 
 1. The last genuine production Responses diagnostic (the approved engine 6 release) returned **`AI_BILLING_REQUIRED`**. This task did not retest/spend through the real key or change billing. Resolve the key owner's OpenAI project billing privately, then use header gear → OpenAI AI Connection → Test Connection after an approved release. Fixture tests do not prove paid API readiness.
-2. Release approval, database backup/migration, matching backend/EA 7 deployment and terminal installation are still required. Keep the current EA 6 matched to production until then. HTTPS origin and existing connection credentials are preserved; this task does not install, attach or rotate the live terminal's EA.
+2. The matching backend/EA 7 release and migration are now complete. Download and install EA 7 with its personalized configuration when ready to attach the terminal. HTTPS origin and existing connection credentials are preserved; deployment does not install, attach or rotate the terminal's EA.
 3. A separately authorized genuine MT5 Demo qualification must prove actual BUY/SELL entry, broker SL/TP, modification/close, partial/rejected execution where available, disconnect/restart recovery, no duplicates, reconciliation and risk limits. No orders of either account type were submitted in this task, so that qualification is **unverified**. Existing positions must not be closed to bypass a blocked test.
 4. Only after Demo evidence should a separate exact-account Live-readiness review inspect funding, broker permissions, engine version, safeguards and the operator disable switch. This task authorizes neither Live enablement nor changing that switch. The application contains real dual-mode code; passing fixtures is not permission to activate production execution.
 5. No profitability, win rate, broker latency, out-of-sample/backtest result, physical Android acceptance or native APK build is claimed.

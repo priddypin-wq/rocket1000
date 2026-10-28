@@ -24,7 +24,7 @@ Current unit/service suite: **451 passed**, zero failures/skips. TypeScript, zer
 
 Responsive browser checks pass at Android-sized 390×844 and desktop 1280×900, with 12 checks covering navigation, removed cards, drawer/Escape, visible Emergency Stop, no main manual fields, no horizontal overflow and no uncaught runtime errors. This is browser emulation, not a physical Android device or native APK acceptance test.
 
-All **56 HTTP integration checks passed** against actual local Next routes, secure sessions, downloads and fixture telemetry. Hosted release results will be recorded separately once completed. Local fixtures never call a broker or paid provider and are isolated from production databases. No real broker order or Live activation is permitted during this release.
+All **56 HTTP integration checks passed** against actual local Next routes, secure sessions, downloads and fixture telemetry. The release then passed **11 staged and 11 public hosted checks**, plus actual public browser verification. See [the deployment record](DEPLOYMENT-2026-10-28.md) for exact source, artifact, safety and external acceptance details. Local fixtures never call a broker or paid provider and are isolated from production databases. No broker order or Live activation was performed.
 
 ## External activation and acceptance
 

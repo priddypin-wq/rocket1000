@@ -4,7 +4,7 @@ This is the existing responsive Next.js application and native MT5 Expert Adviso
 
 ## Server and worker
 
-The current review upgrade is engine `rocket-ai-7` / EA 7.00, not deployed. The public app still uses the approved engine 6 release. Do not install EA 7 against the old backend or change the production Live-order disable switch during review. See [current verification and qualification requirements](ADAPTIVE-UPGRADE-VERIFICATION.md).
+The public app now uses engine `rocket-ai-7` / EA 7.00, source `75af6ce`, released with trading OFF. Use its matching EA 7 download. See [release verification](DEPLOYMENT-2026-10-28.md) and [external activation requirements](ACTIVATION-READINESS.md). Do not change the production Live-order safety switch as part of installation.
 
 1. Use the existing ROCKET1000 Vercel project and HTTPS hostname. Do not create a duplicate project or change the installed EA's backend origin.
 2. Keep `DATABASE_URL`, `ROCKET_DASHBOARD_URL` and `ROCKET_BACKEND_URL` private server configuration. Production uses shared PostgreSQL, not local serverless SQLite.
@@ -31,7 +31,7 @@ The same source and execution pipeline support Live. The header gear → Trading
 
 The private installation tools also provide a personalized `.mq5` with its restricted credential embedded. Keep it private, open it using MetaEditor, save under the intended Experts folder and press F7 to compile. A website cannot guarantee the laptop's `.mq5` file association or automatically attach an EA to a chart. The bundled compiled package is the primary installation method. Never put the private personalized source in GitHub.
 
-Updating requires the matching backend and EA engine version. The approved engine 6 backend is now deployed with Auto Trading OFF; use its matching EA 6 download for the next Demo acceptance test. Normal downloads preserve an active credential; a legacy installation without recoverable encrypted download material asks for explicit credential replacement rather than silently breaking the current terminal. See [the deployment record](DEPLOYMENT-2026-10-27.md) for the current API billing blocker and checks still required.
+Updating requires the matching backend and EA engine version. Engine 7 is now deployed with Auto Trading OFF; use its matching EA 7 download for separately authorized Demo acceptance. Normal downloads preserve an active credential; a legacy installation without recoverable encrypted download material asks for explicit credential replacement rather than silently breaking the current terminal. See [the deployment record](DEPLOYMENT-2026-10-28.md) for actual hosted checks and remaining external acceptance.
 
 ## Android and desktop interface
 
