@@ -242,6 +242,22 @@ export default function Mt5Connection() {
               Replace EA installation…
             </button>
           ) : null}
+          <button
+            className="action-outline"
+            disabled={!c?.installation || !!c.installation.revokedAt || !!busy}
+            onClick={async () => {
+              if (!c) return;
+              try {
+                await mt5Api("revoke", { connectionId: c.id });
+                await refresh();
+                setNotice("EA credential revoked.");
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Revocation failed");
+              }
+            }}
+          >
+            Revoke EA access
+          </button>
         </details>
         <div className="inner-error" role="alert">
           {networkError || error || state?.provisioningError}
@@ -311,60 +327,6 @@ export default function Mt5Connection() {
             <b>{value}</b>
           </div>
         ))}
-      </section>
-      <section className="inner-card">
-        <h3>Install & connect</h3>
-        <ol className="inner-list">
-          <li>
-            Download and extract ROCKET1000_EA.zip. In MT5, choose File → Open
-            Data Folder.
-          </li>
-          <li>
-            Copy the package’s MQL5 folder into that data folder, merging its
-            Experts and Files folders. Keep the bundled private config in place.
-          </li>
-          <li>
-            Copy the MT5 URL into Tools → Options → Expert Advisors → Allow
-            WebRequest.
-          </li>
-          <li>
-            Log into your Demo or Live broker account and attach ROCKET1000 EA
-            to the broker symbol you want it to analyze. The EA detects account
-            type and reports the exact broker symbol automatically.
-          </li>
-          <li>
-            Wait for account verification and enable this EA&#39;s Algo Trading
-            permission. Save and test your OpenAI key in Settings, then press
-            Start Auto Trading on Home. The same workflow applies to Demo and
-            Live; every order still needs a valid OpenAI decision and
-            independent risk approval.
-          </li>
-        </ol>
-        <p className="inner-caption">
-          No email or token entry. This browser owns the connection. Repeat
-          downloads preserve the working EA credential. Revoking an installation
-          requires a new personalized download. Switching Demo or Live accounts
-          invalidates old commands and verifies the new broker identity before
-          an explicitly enabled session may resume. A temporary reconnect must
-          verify the account and terminal again. Stop Auto Trading and Emergency
-          Stop stay OFF until you explicitly restart.
-        </p>
-        <button
-          className="action-outline"
-          disabled={!c?.installation || !!c.installation.revokedAt || !!busy}
-          onClick={async () => {
-            if (!c) return;
-            try {
-              await mt5Api("revoke", { connectionId: c.id });
-              await refresh();
-              setNotice("EA credential revoked.");
-            } catch (e) {
-              setError(e instanceof Error ? e.message : "Revocation failed");
-            }
-          }}
-        >
-          Revoke EA access
-        </button>
       </section>
       <ConnectedSymbols data={orders.data} error={orders.error} />
       <dialog
