@@ -171,7 +171,9 @@ export default function Mt5Connection() {
         <p>
           One official ROCKET1000 EA links your app to the broker account already
           signed in on MetaTrader 5. No separate app broker login, pairing code,
-          or second EA connection is required.
+          or second EA connection is required. AI analysis is managed by
+          ROCKET1000 behind the scenes; availability is checked independently
+          before trading can be authorized.
         </p>
         {verifiedAccount ? (
           <p className="inner-notice" role="status">
