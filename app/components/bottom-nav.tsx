@@ -5,18 +5,18 @@ export default function BottomNav({ active = "" }: { active?: string }) {
       {[
         ["/", "⌂", "Home"],
         ["/dashboard", "▥", "Market"],
-        ["/mt5", "⇄", "MT5"],
+        ["/mt5", "⇄", "MT5 / EA"],
       ].map(([href, icon, label]) => (
         <Link
           key={href}
           href={href}
           className={
-            active === label || (active === "Markets" && label === "Market")
+            active === label || (active === "Markets" && label === "Market") || (active === "MT5" && href === "/mt5")
               ? "robot-nav-active"
               : ""
           }
           aria-current={
-            active === label || (active === "Markets" && label === "Market")
+            active === label || (active === "Markets" && label === "Market") || (active === "MT5" && href === "/mt5")
               ? "page"
               : undefined
           }
