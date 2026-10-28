@@ -4,7 +4,7 @@ export default function Page() {
   return (
     <AppShell
       title="MetaTrader 5"
-      subtitle="Your terminal. Your connection."
+      subtitle="One app. One EA. One MT5 connection."
       active="MT5"
     >
       <Mt5Connection />
