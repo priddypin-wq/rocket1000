@@ -83,29 +83,15 @@ export default function Mt5Connection() {
         : null;
   const status = networkError
     ? "Connection Error"
-    : c?.status === "Connected"
+    : !state
+      ? "Checking"
+      : c?.status === "Connected"
       ? "Connected"
       : ["Authentication Failed", "Account Mismatch"].includes(c?.status || "")
         ? "Connection Error"
         : "Disconnected";
   async function refresh() {
     setState(await (await mt5Api("connections")).json());
-  }
-  async function generate() {
-    setBusy("generate");
-    setError("");
-    setNotice("");
-    try {
-      await mt5Api("generate", {});
-      await refresh();
-      setNotice(
-        "HTTPS connection verified. Copy the URL and download your EA.",
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection generation failed");
-    } finally {
-      setBusy("");
-    }
   }
   async function copy() {
     if (!state?.serverUrl) return;
@@ -126,7 +112,10 @@ export default function Mt5Connection() {
     setBusy("download");
     setError("");
     try {
+      // Generate/verify the single existing connection automatically.
+      // The backend reuses the existing connection and sealed EA credential.
       const generated = await (await mt5Api("generate", {})).json();
+      await refresh();
       const response = await mt5Api("download", {
         connectionId: generated.connectionId,
         format,
@@ -158,84 +147,116 @@ export default function Mt5Connection() {
       setBusy("");
     }
   }
+  const connectionIssue =
+    networkError ||
+    error ||
+    (state?.provisioningError?.startsWith("Generate Connection")
+      ? ""
+      : state?.provisioningError || "");
   return (
     <>
-      <section className="inner-card">
+      <section className="inner-card" aria-labelledby="single-mt5-connection">
         <div className="inner-card-title">
-          <span>MT5 CONNECTION</span>
+          <span id="single-mt5-connection">ONE MT5 CONNECTION</span>
           <span
-            className={`inner-tag ${status === "Connected" ? "tag-connected" : ""}`}
+            className={`inner-tag ${status === "Connected" && verifiedAccount ? "tag-connected" : ""}`}
             role="status"
           >
-            {status}
+            {status === "Connected" && !verifiedAccount
+              ? "Verifying broker"
+              : status}
           </span>
         </div>
-        <h2>Connect your terminal.</h2>
+        <h2>ROCKET1000 App ↔ EA ↔ MT5</h2>
         <p>
-          One EA for Demo and Live. Download the verified compiled EA package;
-          its private connection configuration is already included.
+          One official ROCKET1000 EA links your app to the broker account already
+          signed in on MetaTrader 5. No separate app broker login, pairing code,
+          or second EA connection is required. AI analysis is managed by
+          ROCKET1000 behind the scenes; availability is checked independently
+          before trading can be authorized.
         </p>
+        {verifiedAccount ? (
+          <p className="inner-notice" role="status">
+            Verified: {verifiedAccount.brokerName || verifiedAccount.server} ·{" "}
+            {verifiedAccount.login} · {accountLabel?.toUpperCase() || "MT5"}
+          </p>
+        ) : (
+          <p className="inner-caption" role="status">
+            {status === "Connection Error"
+              ? "Connection needs attention. Review the error below."
+              : "Waiting for your ROCKET1000 EA to report a verified broker account."}
+          </p>
+        )}
         <button
+          type="button"
           className="action-red"
-          disabled={!!busy}
-          onClick={() => {
-            void generate();
-          }}
-        >
-          {busy === "generate"
-            ? "Verifying HTTPS server…"
-            : "Generate Connection"}
-        </button>
-        <div className="url-field">
-          <span>MT5 WebRequest URL</span>
-          <code>{state?.serverUrl || "Generate a connection first"}</code>
-        </div>
-        <button
-          className="action-outline"
-          disabled={!state?.serverUrl || !!busy}
-          onClick={() => {
-            void copy();
-          }}
-        >
-          Copy EA Connection URL
-        </button>
-        <button
-          className="action-white"
-          disabled={!state?.downloadReady || !!busy || !!networkError}
-          onClick={() => {
-            void download();
-          }}
+          disabled={!state || !!busy || !!networkError}
+          onClick={() => void download()}
         >
           {busy === "download"
             ? "Preparing your EA…"
-            : "Download Rocket1000 EA (.ex5)"}
+            : c?.installation && !c.installation.revokedAt
+              ? "Download the same EA package"
+              : "Prepare & download ROCKET1000 EA"}
         </button>
         <p className="inner-caption">
-          ZIP contains the actual compiled .ex5, personalized configuration and
-          instructions. Download is available only after build verification.
+          This one action verifies your app server and downloads the personalized,
+          compiled EA with its private configuration. Re-downloads reuse the
+          existing installation when its saved credential is available. This
+          does not enable Auto Trading or place an order.
         </p>
+        <div className="settings-inline-details">
+          <h3>Complete the setup in Windows MT5</h3>
+          <ol>
+            <li>
+              In MT5, select File → Open Data Folder. Extract the downloaded ZIP
+              and copy its MQL5 folder into that data folder.
+            </li>
+            <li>
+              In Tools → Options → Expert Advisors, allow WebRequest for this
+              HTTPS address. This is a required MT5 security permission, not
+              another connection or password.
+              <div className="url-field">
+                <span>Allowed MT5 WebRequest address</span>
+                <code>
+                  {state?.serverUrl || "Prepare your EA to reveal the address"}
+                </code>
+              </div>
+              <button
+                className="action-outline"
+                type="button"
+                disabled={!state?.serverUrl || !!busy}
+                onClick={() => void copy()}
+              >
+                Copy allowed MT5 address
+              </button>
+            </li>
+            <li>
+              Sign in to your broker inside MT5, refresh Navigator and attach
+              ROCKET1000 EA to one chart. Keep the Windows terminal or VPS
+              running; this app will show Connected after verification.
+            </li>
+          </ol>
+        </div>
         <details className="settings-inline-details">
-          <summary>Connection repair & MetaEditor source</summary>
+          <summary>Repair this EA installation (advanced)</summary>
           <p>
-            If MT5 reports a missing configuration, reinstall both folders from
-            the compiled package, or download the self-contained MetaEditor
-            source below. Keep either download private.
+            If MT5 cannot find the EA configuration, reinstall both MQL5
+            folders from the same package. The editable MetaEditor source is
+            available as a fallback; it uses the same single connection.
           </p>
           <button
             className="action-outline"
-            disabled={!state?.downloadReady || !!busy || !!networkError}
+            type="button"
+            disabled={!state || !!busy || !!networkError}
             onClick={() => void download("source")}
           >
             Download MetaEditor source (.mq5)
           </button>
-          <p className="inner-caption">
-            Open the downloaded file in MetaEditor and compile it. Automatic
-            opening depends on the file association configured on your computer.
-            No manual URL or token entry is required.
-          </p>
           {c?.installation && !c.installation.revokedAt ? (
             <button
               className="inner-text-button"
+              type="button"
               disabled={!!busy}
               onClick={() => setReplacementFormat("package")}
             >
@@ -244,6 +265,7 @@ export default function Mt5Connection() {
           ) : null}
           <button
             className="action-outline"
+            type="button"
             disabled={!c?.installation || !!c.installation.revokedAt || !!busy}
             onClick={async () => {
               if (!c) return;
@@ -259,12 +281,16 @@ export default function Mt5Connection() {
             Revoke EA access
           </button>
         </details>
-        <div className="inner-error" role="alert">
-          {networkError || error || state?.provisioningError}
-        </div>
-        <div className="inner-notice" role="status">
-          {notice}
-        </div>
+        {connectionIssue ? (
+          <p className="inner-error" role="alert">
+            {connectionIssue}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="inner-notice" role="status">
+            {notice}
+          </p>
+        ) : null}
       </section>
       <section className="inner-card">
         <div className="inner-card-title">
