@@ -128,7 +128,7 @@ export default function OpenAiConnection() {
       aria-labelledby="openai-title"
     >
       <div className="inner-card-title">
-        <span id="openai-title">OPENAI AI CONNECTION</span>
+        <span id="openai-title">AI SERVICE STATUS</span>
         <span
           className={`settings-status ${verified ? "is-connected" : ""}`}
           role="status"
@@ -143,7 +143,7 @@ export default function OpenAiConnection() {
         </span>
       </div>
       <p>
-        The configured OpenAI account powers strategy analysis. Independent risk
+        AI runs as a managed service inside ROCKET1000; it does not require a second MT5 pairing. Independent risk
         checks and broker-side protective stops remain enforced.
       </p>
       {serverManaged ? (
@@ -181,7 +181,7 @@ export default function OpenAiConnection() {
               disabled={!!busy || !status?.configured}
               onClick={() => void perform("test")}
             >
-              {busy === "test" ? "Testing…" : "Test Connection"}
+              {busy === "test" ? "Testing…" : "Test AI Service"}
             </button>
           </div>
         </div>
