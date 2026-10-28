@@ -645,10 +645,18 @@ export function engineService(
   }
   async function discoverStarts({ limit = 2 } = {}) {
     const rows = await db.query(
-      "SELECT DISTINCT c.user_id FROM rocket_direct_connections c JOIN rocket_direct_installations i ON i.connection_id=c.id LEFT JOIN rocket_analysis_activation a ON a.connection_id=c.id WHERE i.revoked_at IS NULL AND i.expires_at>? AND i.registered_at IS NOT NULL AND i.last_heartbeat>? AND (a.paused IS NULL OR a.paused=0) AND (a.next_attempt IS NULL OR a.next_attempt<=?) AND (a.lease_until IS NULL OR a.lease_until<=?) ORDER BY c.user_id LIMIT ?",
+      "SELECT c.id,c.user_id FROM rocket_direct_connections c LEFT JOIN rocket_analysis_activation a ON a.connection_id=c.id LEFT JOIN rocket_engine_discovery d ON d.connection_id=c.id WHERE EXISTS (SELECT 1 FROM rocket_direct_installations i WHERE i.connection_id=c.id AND i.revoked_at IS NULL AND i.expires_at>? AND i.registered_at IS NOT NULL AND i.last_heartbeat>?) AND (a.paused IS NULL OR a.paused=0) AND (a.next_attempt IS NULL OR a.next_attempt<=?) AND (a.lease_until IS NULL OR a.lease_until<=?) ORDER BY COALESCE(d.checked_at,0),c.user_id LIMIT ?",
       [now(), now() - 30000, now(), now(), Math.max(1, Math.min(10, limit))],
     );
-    for (const row of rows) await autoStart(row.user_id);
+    for (const row of rows) {
+      // Persist fair discovery across worker processes/restarts. Healthy or
+      // temporarily blocked early users must not starve a later connection.
+      await db.query(
+        "INSERT INTO rocket_engine_discovery(connection_id,checked_at) VALUES(?,?) ON CONFLICT(connection_id) DO UPDATE SET checked_at=excluded.checked_at",
+        [row.id, now()],
+      );
+      await autoStart(row.user_id);
+    }
     return { discovered: rows.length };
   }
   async function configure(uid, input) {

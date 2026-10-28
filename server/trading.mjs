@@ -662,7 +662,7 @@ export function orderRisk(ctx, order) {
         "Verified trading permission and an unambiguous broker state are required.",
       );
     if (e.protocol !== 4)
-      throw new ApiError(409, "Upgrade to EA 6.00 for position management.");
+      throw new ApiError(409, "Upgrade to EA 7.00 for position management.");
     const p = m?.positions.find(
       (p) => p.ticket === order.position && p.managed,
     );

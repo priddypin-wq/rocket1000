@@ -8,6 +8,7 @@ import { analysisQueue } from "../server/analysis-queue.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { ApiError } from "../server/errors.mjs";
 import { accountKey } from "../server/trade-settings.mjs";
+import { unzipSync, strFromU8 } from "fflate";
 
 // Protocol and provider-response fixtures only. No network, credentials,
 // production permissions, or genuine broker execution are exercised here.
@@ -729,6 +730,70 @@ test("a durable worker discovers an eligible EA and starts monitoring without br
     assert.ok(["scheduled", "running"].includes(row.state));
     assert.equal((await f.trade.status("alice")).permissionActive, false);
     assert.equal(f.tests(), 1);
+    assert.equal(await f.count("rocket_trade_commands"), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("persistent worker discovery reaches later workspaces while earlier engines stay healthy", async () => {
+  const f = await setup("demo", { autoEnabled: false, keyConnected: true });
+  try {
+    await f.engine.heartbeat();
+    await f.auto();
+    const ids = new Map([["alice", f.id]]);
+    await f.db.query(
+      "INSERT INTO rocket_workspaces(id,created_at,expires_at) VALUES(?,?,?)",
+      ["charlie", f.now(), f.now() + 86400000],
+    );
+    for (const uid of ["bob", "charlie"]) {
+      const { id } = await f.service.create(uid);
+      ids.set(uid, id);
+      const files = unzipSync(await f.service.download(uid, id));
+      const token = strFromU8(
+        files["MQL5/Files/ROCKET1000/rocket1000.config"],
+      ).match(/^credential=(.+)$/m)[1];
+      await f.service.telemetry(
+        token,
+        {
+          ...terminal,
+          accountType: "demo",
+          accountTradeMode: 0,
+          eaProtocol: 4,
+          terminalSession: SESSION,
+          execution,
+          market: market(f.now()),
+        },
+        true,
+      );
+    }
+    for (let i = 0; i < 3; i++) {
+      // Recreate the worker facade each time: fairness cannot depend on an
+      // in-memory cursor surviving a deployment or worker restart.
+      const restarted = engineService(f.db, {
+        now: f.now,
+        credentials: {
+          status: async () => ({
+            configured: true,
+            revision: "fixture-key-revision",
+            connection: { connected: true },
+          }),
+          test: async () => {
+            throw Error("Cached verification should be reused");
+          },
+        },
+      });
+      await restarted.discoverStarts({ limit: 1 });
+    }
+    for (const [uid, id] of ids) {
+      const [engine] = await f.db.query(
+        "SELECT state FROM rocket_analysis_engine WHERE connection_id=?",
+        [id],
+      );
+      assert.equal(engine?.state, "scheduled", uid + " must not be starved");
+      assert.equal((await f.trade.status(uid)).permissionActive, false);
+    }
+    assert.equal(await f.count("rocket_trade_policy"), 0);
     assert.equal(await f.count("rocket_trade_commands"), 0);
   } finally {
     await f.db.close();

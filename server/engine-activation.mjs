@@ -13,6 +13,7 @@ export const environmentCredentialRevision = (env = process.env) =>
     .digest("hex");
 
 export const engineActivationSchema = [
+  `CREATE TABLE IF NOT EXISTS rocket_engine_discovery (connection_id TEXT PRIMARY KEY,checked_at BIGINT NOT NULL DEFAULT 0,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
   `CREATE TABLE IF NOT EXISTS rocket_engine_activation (connection_id TEXT PRIMARY KEY,paused INTEGER NOT NULL DEFAULT 1,generation TEXT NOT NULL,next_attempt BIGINT NOT NULL DEFAULT 0,lease_until BIGINT NOT NULL DEFAULT 0,reason TEXT,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
   `CREATE TABLE IF NOT EXISTS rocket_analysis_activation (connection_id TEXT PRIMARY KEY,paused INTEGER NOT NULL DEFAULT 0,generation TEXT NOT NULL,mode TEXT NOT NULL DEFAULT 'analysis',account_key TEXT,next_attempt BIGINT NOT NULL DEFAULT 0,lease_until BIGINT NOT NULL DEFAULT 0,reason TEXT,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
   `CREATE TABLE IF NOT EXISTS rocket_execution_intent (connection_id TEXT PRIMARY KEY,account_key TEXT NOT NULL,installation_id TEXT NOT NULL,terminal_id TEXT NOT NULL,engine_version TEXT NOT NULL,enabled_at BIGINT NOT NULL,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
