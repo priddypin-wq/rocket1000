@@ -37,6 +37,7 @@ export default function EngineDiagnostics() {
     [],
   );
   const [error, setError] = useState("");
+  const [authorizationError, setAuthorizationError] = useState("");
   const [busy, setBusy] = useState(false);
   const [review, setReview] = useState<LiveReview | null>(null);
   const [accepted, setAccepted] = useState(false);
@@ -93,6 +94,7 @@ export default function EngineDiagnostics() {
       setReview(null);
       setAccepted(false);
       setNotice("");
+      setAuthorizationError("");
       void poll();
     };
     window.addEventListener("rocket-trading-stopped", stopped);
@@ -118,7 +120,7 @@ export default function EngineDiagnostics() {
     const revision = ++requestRevision.current;
     setBusy(true);
     setNotice("");
-    setError("");
+    setAuthorizationError("");
     try {
       if (
         confirm &&
@@ -150,6 +152,7 @@ export default function EngineDiagnostics() {
                 expectedInstallationId: data?.installationId,
                 expectedSessionId: data?.sessionId,
               },
+          AbortSignal.timeout(15000),
         )
       ).json();
       if (!mounted.current || revision !== requestRevision.current) return;
@@ -191,8 +194,12 @@ export default function EngineDiagnostics() {
       await Promise.all([orders.refresh(), engine.refresh()]);
     } catch (e) {
       if (mounted.current && revision === requestRevision.current)
-        setError(
-          e instanceof Error ? e.message : "Account authorization failed",
+        setAuthorizationError(
+          e instanceof Error && e.name === "TimeoutError"
+            ? "Account authorization timed out. Check the current approval status before retrying. This action did not start Auto Trading."
+            : e instanceof Error
+              ? e.message
+              : "Account authorization failed",
         );
     } finally {
       mutating.current = false;
@@ -378,11 +385,12 @@ export default function EngineDiagnostics() {
             </div>
             {!data.liveConfirmed && !review ? (
               <button
+                type="button"
                 className="action-outline"
                 disabled={busy || !!error || !!orders.error}
                 onClick={() => void authorize(false)}
               >
-                Review this Live account
+                {busy ? "Checking Live account…" : "Review this Live account"}
               </button>
             ) : null}
           </>
@@ -392,6 +400,19 @@ export default function EngineDiagnostics() {
             and risk checks.
           </p>
         )}
+        {data?.account?.type === "live" && data.connectionBlockers?.length ? (
+          <div role="status">
+            <p>Live review is blocked by the current terminal status:</p>
+            {data.connectionBlockers.map((blocker) => (
+              <p key={blocker}>{blocker}</p>
+            ))}
+          </div>
+        ) : null}
+        {authorizationError ? (
+          <p className="inner-error" role="alert">
+            {authorizationError}
+          </p>
+        ) : null}
         {review ? (
           <div
             className="live-review"
@@ -429,6 +450,7 @@ export default function EngineDiagnostics() {
             ) : null}
             <div className="engine-actions">
               <button
+                type="button"
                 className="action-outline"
                 disabled={busy}
                 onClick={() => {
@@ -439,11 +461,12 @@ export default function EngineDiagnostics() {
                 Cancel
               </button>
               <button
+                type="button"
                 className="action-red"
                 disabled={busy || !accepted || !reviewValid}
                 onClick={() => void authorize(true)}
               >
-                Confirm account approval
+                {busy ? "Saving account approval…" : "Confirm account approval"}
               </button>
             </div>
           </div>
