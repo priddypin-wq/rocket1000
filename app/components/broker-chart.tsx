@@ -378,7 +378,6 @@ export default function BrokerMarketTools() {
   return (
     <>
       <BrokerChart report={report} error={error} elapsed={elapsed} />
-      <PrivateReports report={report} />
     </>
   );
 }
