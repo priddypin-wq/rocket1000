@@ -247,6 +247,10 @@ const generatedConnection = {
 };
 
 test("HTTP success alone cannot claim a generated connection, revoked credential or saved key", async () => {
+  const loading = await harness("mt5-connection");
+  assert.match(text(loading.render()), /Checking connection/);
+  assert.doesNotMatch(text(loading.render()), /MT5 CONNECTIONDisconnected/);
+  loading.close();
   for (const [label, endpoint] of [
     ["Generate Connection", "generate"],
     ["Revoke EA access", "revoke"],

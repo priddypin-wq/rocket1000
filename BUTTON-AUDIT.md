@@ -62,6 +62,14 @@ CSS, navigation, assets and EA source/binary have no changes. The real compiled
 EA integrity test passes. No new EA compilation is needed for these browser/API
 handler repairs.
 
+Post-deployment browser checks verified real Generate Connection completion and
+received the compiled EA ZIP. Its binary hash, canonical backend URL, scoped
+credential, expiry and installation instructions were checked without exposing
+the credential. Fresh EA heartbeats continued after download. The copy handler
+reported browser write completion; independent clipboard inspection through the
+in-app automation bridge was inconclusive and is not claimed as an external pass.
+Initial MT5 loading is explicitly shown as checking, rather than disconnected.
+
 Live read-only inspection on 29 October 2026 showed the authenticated Demo
 terminal connected. Private account identifiers are omitted here. The existing
 diagnostics reported:

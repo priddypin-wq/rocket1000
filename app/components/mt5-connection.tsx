@@ -90,11 +90,15 @@ export default function Mt5Connection() {
         : null;
   const status = networkError
     ? "Connection Error"
-    : c?.status === "Connected"
-      ? "Connected"
-      : ["Authentication Failed", "Account Mismatch"].includes(c?.status || "")
-        ? "Connection Error"
-        : "Disconnected";
+    : !state
+      ? "Checking connection"
+      : c?.status === "Connected"
+        ? "Connected"
+        : ["Authentication Failed", "Account Mismatch"].includes(
+              c?.status || "",
+            )
+          ? "Connection Error"
+          : "Disconnected";
   async function refresh() {
     const current = ++connectionGeneration.current;
     const next = await (await mt5Api("connections")).json();
