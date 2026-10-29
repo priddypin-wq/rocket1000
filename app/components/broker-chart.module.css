@@ -1,0 +1,116 @@
+.heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.frameLabel {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+  color: #c6a7b8;
+}
+.frameLabel select {
+  border: 1px solid #65404f;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #18111d;
+  color: #f7bdca;
+  font: inherit;
+}
+.frameLabel select:focus-visible {
+  outline: 2px solid #ff5a70;
+  outline-offset: 3px;
+}
+.quotes {
+  display: flex;
+  gap: 10px 20px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+  color: #b0a0b0;
+  font-size: 11px;
+}
+.quotes b {
+  color: #f2e7ed;
+  margin-left: 4px;
+}
+.plot {
+  overflow: hidden;
+  border-radius: 12px;
+  background: #0f0c16;
+  border: 1px solid #3d2638;
+}
+.plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 160px;
+}
+.grid {
+  stroke: #36263b;
+  stroke-width: 1;
+}
+.axis {
+  fill: #c6b6cd;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.rising {
+  color: #8bd8b2;
+}
+.falling {
+  color: #fa6b91;
+}
+.bid {
+  color: #87b6ff;
+}
+.ask {
+  color: #e4bc74;
+}
+.timestamps {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.candleDetails {
+  color: #c6a7b8;
+  font-size: 11px;
+}
+.candleDetails summary {
+  cursor: pointer;
+  padding: 10px 0;
+}
+.tableScroll {
+  overflow: auto;
+  max-height: 300px;
+}
+.tableScroll table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.tableScroll caption {
+  text-align: left;
+  padding: 8px 0;
+  color: #b0a0b0;
+}
+.tableScroll th,
+.tableScroll td {
+  padding: 8px;
+  border-bottom: 1px solid #36263b;
+}
+.tableScroll th:first-child {
+  text-align: left;
+}
+.reportActions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reportActions button {
+  flex: 1 1 140px;
+}

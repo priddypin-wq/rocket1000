@@ -1,0 +1,53 @@
+{
+  "name": "rocket1000",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:vercel": "node scripts/migrate.mjs && next build",
+    "prepare:vercel": "node scripts/prepare-vercel.mjs",
+    "start": "next start",
+    "test": "node --test tests/*.test.mjs",
+    "lint": "eslint app lib server scripts tests next.config.ts eslint.config.mjs --max-warnings 0",
+    "setup:local": "node scripts/setup-local.mjs",
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
+    "build:ea": "pwsh -NoProfile -File scripts/build-ea.ps1",
+    "test:http": "node scripts/test-http.mjs",
+    "verify:live": "node scripts/verify-live.mjs",
+    "format": "prettier --write app server lib scripts tests *.json *.ts *.md",
+    "worker:analysis": "node --env-file-if-exists=.env.local scripts/analysis-worker.mjs"
+  },
+  "dependencies": {
+    "@vercel/oidc": "4.0.1",
+    "@vercel/queue": "0.10.0",
+    "better-sqlite3": "13.0.3",
+    "fflate": "0.8.3",
+    "next": "16.4.2",
+    "openai": "7.43.0",
+    "pg": "8.23.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "8.23.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
+    "prettier": "3.9.10",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "unrs-resolver@1.12.2": true
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}

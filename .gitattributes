@@ -1,0 +1,3 @@
+ea/*.mq5 text eol=lf
+ea/*.ex5 binary
+ea/*.json text eol=lf
