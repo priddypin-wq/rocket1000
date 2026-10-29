@@ -15,6 +15,7 @@ import {
 import { ApiError } from "../server/errors.mjs";
 import { handle, jsonInput } from "../server/http.mjs";
 import { usageService } from "../server/ai-usage.mjs";
+import * as actionConfirmation from "../lib/action-confirmation.mjs";
 
 // Isolated dummy credentials, database, and provider transport. No network calls.
 const KEY = "sk-server-environment-fixture-not-a-real-key";
@@ -380,6 +381,7 @@ test("the settings panel defaults to server status and model without browser key
   ]) {
     let hook = 0;
     const component = evaluateTs(source, "openai-connection.tsx", {
+      "../../lib/action-confirmation.mjs": actionConfirmation,
       react: {
         ...React,
         useState: (initial) => [hook++ === 0 ? metadata : initial, () => {}],

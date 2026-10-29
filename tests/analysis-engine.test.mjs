@@ -70,6 +70,97 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("a displayed account or EA session mismatch cannot start an engine or spend API credits", async () => {
+  const f = await setup();
+  try {
+    await f.engine.heartbeat();
+    const state = await f.engine.status("alice");
+    for (const options of [
+      { expectedAccountKey: "a".repeat(64) },
+      { expectedInstallationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      { expectedSessionId: "b".repeat(24), analysisOnly: true },
+    ]) {
+      await assert.rejects(
+        f.engine.start("alice", options),
+        (e) => e.code === "ACCOUNT_CONTEXT_CHANGED",
+      );
+      assert.equal(
+        (await f.engine.status("alice")).controlRevision,
+        state.controlRevision,
+      );
+      assert.equal(
+        (await f.db.query("SELECT * FROM rocket_trade_policy")).length,
+        0,
+      );
+    }
+    assert.equal(f.calls(), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("Stop invalidates the control revision captured by a delayed Start button request", async () => {
+  const f = await setup();
+  try {
+    await f.engine.heartbeat();
+    const displayed = await f.engine.status("alice");
+    const stopped = await f.engine.stop("alice");
+    assert.notEqual(stopped.controlRevision, displayed.controlRevision);
+    await assert.rejects(
+      f.engine.start("alice", {
+        expectedAccountKey: displayed.accountKey,
+        expectedControlRevision: displayed.controlRevision,
+      }),
+      (e) => e.code === "AI_START_CANCELLED",
+    );
+    assert.equal((await f.engine.status("alice")).state, "stopped");
+    assert.equal(f.calls(), 0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("Stop during readiness lookup prevents an older Start from clearing its stop", async () => {
+  const entered = deferred(),
+    release = deferred();
+  let providerTests = 0;
+  const f = await setup({
+    credentials: {
+      status: async () => {
+        entered.resolve();
+        await release.promise;
+        return {
+          configured: true,
+          revision: "fixture-r1",
+          connection: { connected: false },
+        };
+      },
+      test: async () => {
+        providerTests++;
+        return { connected: true };
+      },
+      environment: async () => ({}),
+    },
+  });
+  try {
+    await f.engine.heartbeat();
+    const pending = f.engine.start("alice");
+    await entered.promise;
+    await f.engine.stop("alice");
+    release.resolve();
+    await assert.rejects(pending, (e) => e.code === "AI_START_CANCELLED");
+    assert.equal(providerTests, 0);
+    assert.equal((await f.engine.status("alice")).state, "stopped");
+    assert.equal(
+      (await f.db.query("SELECT * FROM rocket_trade_policy")).length,
+      0,
+    );
+  } finally {
+    release.resolve();
+    await f.db.close();
+  }
+});
 async function setup({
   type = "demo",
   credentials: customKeys,
@@ -115,7 +206,8 @@ async function setup({
       register,
     );
   await send(undefined, true);
-  if (type === "live") await approveFixtureLive(tradingService(f.db,{now:f.now}));
+  if (type === "live")
+    await approveFixtureLive(tradingService(f.db, { now: f.now }));
   return { ...f, env, keys, engine, send, calls: () => calls };
 }
 test("START requires an actual scheduler check-in and never claims an unstarted worker", async () => {

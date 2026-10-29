@@ -127,6 +127,17 @@ try {
   assert.equal((await request("/api/mt5/reports?format=json")).status, 401);
   assert.equal((await request("/api/mt5/reports?format=csv")).status, 401);
   passed("owned orders and EA symbols require the private browser cookie");
+  assert.equal(
+    (
+      await request(
+        "/api/mt5/trading?commandId=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      )
+    ).status,
+    401,
+  );
+  passed(
+    "exact broker command confirmations require the same private browser session",
+  );
   for (const path of ["engine", "openai"]) {
     assert.equal((await request(`/api/mt5/${path}`)).status, 401);
     assert.equal(
@@ -746,6 +757,16 @@ try {
   assert.ok(reportResponse.headers.get("cache-control").includes("no-store"));
   const report = await reportResponse.json();
   assert.equal(report.account.login, telemetry.accountLogin);
+  assert.match(report.accountKey, /^[a-f0-9]{64}$/);
+  const switchedReport = await request(
+    `/api/mt5/reports?format=csv&download=1&expectedAccountKey=${"a".repeat(64)}`,
+    { cookie: alice },
+  );
+  assert.equal(switchedReport.status, 409);
+  assert.equal((await switchedReport.json()).code, "ACCOUNT_CONTEXT_CHANGED");
+  passed(
+    "report downloads refuse a different account than the one displayed at the tap",
+  );
   assert.equal(report.chart.symbol, denseMarket.symbol);
   assert.deepEqual(
     report.chart.timeframes.M5.bars,
@@ -998,6 +1019,25 @@ try {
   assert.equal(persistedStop.state, "stopped");
   assert.equal(persistedStop.usage.estimatedUsd, 0);
   assert.equal(persistedStop.usage.reservedUsd, 0);
+  const delayedStart = await request("/api/mt5/engine", {
+    cookie: alice,
+    body: { action: "start", expectedControlRevision: "uninitialized" },
+  });
+  assert.equal(delayedStart.status, 409);
+  assert.equal((await delayedStart.json()).code, "AI_START_CANCELLED");
+  passed("a delayed Start button cannot overwrite a newer persisted Stop");
+  const invalidCommand = await request("/api/mt5/trading?commandId=invalid", {
+    cookie: alice,
+  });
+  assert.equal(invalidCommand.status, 400);
+  const missingCommand = await request(
+    "/api/mt5/trading?commandId=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    { cookie: alice },
+  );
+  assert.equal(missingCommand.status, 404);
+  passed(
+    "command confirmation lookup validates identifiers and never fabricates a missing broker result",
+  );
   const stoppedTrading = await (
     await request("/api/mt5/trading", { cookie: alice })
   ).json();

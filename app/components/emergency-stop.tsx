@@ -1,6 +1,6 @@
 "use client";
-import { useState } from "react";
-import { mt5Api } from "../../lib/mt5-client";
+import { useRef, useState } from "react";
+import { engineControls } from "../../lib/engine-control";
 
 export default function EmergencyStop({
   compact = false,
@@ -9,15 +9,22 @@ export default function EmergencyStop({
 }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const pending = useRef(false);
   async function stop() {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setNotice("");
     try {
-      await mt5Api("stop", {});
+      const confirmed = await engineControls.emergencyStop();
+      if (!confirmed)
+        throw Error(
+          engineControls.getSnapshot().error ||
+            "Stop was not confirmed. Check your MT5 terminal.",
+        );
       setNotice(
         "Emergency Stop confirmed. New execution is blocked; existing positions remain open. An order already sent to the broker may still complete.",
       );
-      window.dispatchEvent(new Event("rocket-trading-stopped"));
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -25,6 +32,7 @@ export default function EmergencyStop({
           : "Stop was not confirmed. Check your MT5 terminal.",
       );
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }

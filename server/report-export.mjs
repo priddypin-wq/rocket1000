@@ -124,6 +124,7 @@ export function privateReportService(db, { now = Date.now } = {}) {
     const report = {
       version: 1,
       generatedAt: now(),
+      accountKey: status.accountKey,
       scope:
         "Current authenticated account; verified Rocket1000 positions and up to 100 broker deals",
       historyComplete: false,

@@ -1,6 +1,6 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { mt5Api } from "./mt5-client";
+import { useEffect, useSyncExternalStore } from "react";
+import { engineControls } from "./engine-control";
 
 export type AnalysisEngineStatus = {
   state: "stopped" | "verifying" | "scheduled" | "running" | "suspended";
@@ -10,6 +10,10 @@ export type AnalysisEngineStatus = {
   frequencySeconds: number;
   mode?: "analysis" | "execution";
   executionAuthorized?: boolean;
+  controlRevision?: string;
+  accountKey?: string | null;
+  installationId?: string | null;
+  sessionId?: string | null;
   automaticAnalysis?: {
     paused: boolean;
     nextAttempt: number | null;
@@ -26,69 +30,28 @@ export type AnalysisEngineStatus = {
 };
 
 export function useAnalysisEngine() {
-  const [data, setData] = useState<AnalysisEngineStatus | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [pendingAction, setPendingAction] = useState("");
-  const active = useRef(false);
-  const request = useRef(0);
-  const polling = useRef(false);
-  const mutating = useRef(false);
-  const refresh = useCallback(async () => {
-    if (polling.current || mutating.current) return;
-    polling.current = true;
-    const current = ++request.current;
-    try {
-      const next = await (await mt5Api("engine")).json();
-      if (active.current && current === request.current) {
-        setData(next);
-        setError("");
-      }
-    } catch (e) {
-      if (active.current && current === request.current)
-        setError(e instanceof Error ? e.message : "Engine status unavailable");
-    } finally {
-      polling.current = false;
-    }
-  }, []);
+  const state = useSyncExternalStore(
+    engineControls.subscribe,
+    engineControls.getSnapshot,
+    engineControls.getServerSnapshot,
+  );
+  const refresh = engineControls.refresh;
   useEffect(() => {
-    active.current = true;
     const initial = window.setTimeout(() => void refresh(), 0);
     const timer = setInterval(() => void refresh(), 5000);
     return () => {
-      active.current = false;
-      request.current += 1;
       window.clearTimeout(initial);
       clearInterval(timer);
     };
   }, [refresh]);
-  const action = useCallback(async (body: Record<string, unknown>) => {
-    mutating.current = true;
-    setBusy(true);
-    setPendingAction(String(body.action || ""));
-    setError("");
-    const current = ++request.current;
-    try {
-      const next = await (await mt5Api("engine", body)).json();
-      if (active.current && current === request.current) setData(next);
-      return true;
-    } catch (e) {
-      if (active.current && current === request.current)
-        setError(
-          e instanceof Error ? e.message : "Engine action was not confirmed",
-        );
-      return false;
-    } finally {
-      if (current === request.current) {
-        mutating.current = false;
-        if (active.current) {
-          setBusy(false);
-          setPendingAction("");
-        }
-      }
-    }
-  }, []);
-  return { data, error, busy, pendingAction, refresh, action };
+  return {
+    data: state.data as AnalysisEngineStatus | null,
+    error: state.error,
+    busy: state.busy,
+    pendingAction: state.pendingAction,
+    refresh,
+    action: engineControls.action,
+  };
 }
 
 export function engineLabel(state?: AnalysisEngineStatus["state"]) {

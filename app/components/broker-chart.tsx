@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { mt5Api } from "../../lib/mt5-client";
+import { requestBrowserDownload } from "../../lib/browser-download.mjs";
 import { brokerNumber } from "../../lib/use-orders";
 import {
   brokerClock,
@@ -211,7 +212,16 @@ export function BrokerChart({
 export function PrivateReports({ report }: { report: PrivateReport | null }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const actionInFlight = useRef(false);
   async function perform(action: "copy" | "download") {
+    if (actionInFlight.current) return;
+    if (!report?.account) {
+      setNotice(
+        "Connect your EA and verify its account before creating a report.",
+      );
+      return;
+    }
+    actionInFlight.current = true;
     setBusy(true);
     setNotice("");
     try {
@@ -219,34 +229,53 @@ export function PrivateReports({ report }: { report: PrivateReport | null }) {
       const response = await mt5Api(
         action === "copy"
           ? "reports?format=json"
-          : "reports?format=csv&download=1",
+          : "reports?format=csv&download=1" +
+              (report.accountKey
+                ? `&expectedAccountKey=${encodeURIComponent(report.accountKey)}`
+                : ""),
       );
       if (action === "copy") {
         const freshReport: PrivateReport = await response.json();
+        if (
+          !freshReport.account ||
+          freshReport.account.login !== report.account.login ||
+          freshReport.account.server !== report.account.server ||
+          freshReport.account.type !== report.account.type ||
+          typeof freshReport.summary !== "string" ||
+          !freshReport.summary.trim()
+        )
+          throw new Error(
+            "The verified account changed or its report is unavailable. Refresh Market before copying again.",
+          );
+        if (!navigator.clipboard?.writeText)
+          throw new Error(
+            "Clipboard access is unavailable. Use HTTPS and allow clipboard access, or download the CSV instead.",
+          );
         await navigator.clipboard.writeText(freshReport.summary);
         setNotice("Private broker summary copied.");
       } else {
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download =
+        const filename =
           response.headers
             .get("Content-Disposition")
             ?.match(/filename="([^"]+)"/)?.[1] || "rocket1000-report.csv";
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        setNotice("Private CSV report downloaded.");
+        await requestBrowserDownload(response, {
+          filename,
+          contentTypes: ["text/csv"],
+        });
+        setNotice(
+          "Private CSV download requested. Check your browser’s downloads.",
+        );
       }
     } catch (error) {
       setNotice(
-        error instanceof Error
-          ? error.message
-          : "The private report could not be created.",
+        error instanceof Error && error.name === "NotAllowedError"
+          ? "Clipboard permission was denied. Allow clipboard access or download the CSV instead."
+          : error instanceof Error
+            ? error.message
+            : "The private report could not be created.",
       );
     } finally {
+      actionInFlight.current = false;
       setBusy(false);
     }
   }

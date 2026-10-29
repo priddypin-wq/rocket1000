@@ -269,6 +269,23 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
           status: positionFresh && onChart ? "Open" : "Requires attention",
           fresh: positionFresh,
           receivedAt: Number(row.received_at),
+          closeBlocker: !positionFresh
+            ? "Fresh broker position data for this exact account is required."
+            : !trading.permissionActive
+              ? trading.connectionBlockers[0] ||
+                "Current account execution authorization is OFF. Enable Auto Trading after its readiness checks pass."
+              : trading.brokerOutcomePending
+                ? "A previous broker command is awaiting reconciliation."
+                : (
+                      onChart
+                        ? execution?.sessionOpen === false ||
+                          execution?.symbolTradeMode === 0 ||
+                          (execution?.orderMode !== undefined &&
+                            !(execution.orderMode & 1))
+                        : !oldSymbolCloseSafe
+                    )
+                  ? "Fresh execution permission and an open broker session for this position's symbol are required."
+                  : null,
           canClose: !!(
             positionFresh &&
             trading.permissionActive &&
@@ -491,6 +508,8 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         serverTime: now(),
         connection: {
           id: c.id,
+          installationId: i?.id || null,
+          sessionId: e?.session_id || null,
           status: connectionState.status,
           fresh,
           lastHeartbeat: connectionState.lastHeartbeat,

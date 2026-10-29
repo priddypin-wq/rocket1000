@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mt5Api } from "../../lib/mt5-client";
+import { verifiedConnectionResponse } from "../../lib/action-confirmation.mjs";
+import { requestBrowserDownload } from "../../lib/browser-download.mjs";
 import { brokerNumber, useOrders } from "../../lib/use-orders";
 import { ConnectedSymbols } from "./trading-dashboard";
 type Connection = {
@@ -30,6 +32,8 @@ export default function Mt5Connection() {
   const [networkError, setNetworkError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
+  const actionInFlight = useRef(false);
+  const connectionGeneration = useRef(0);
   const [replacementFormat, setReplacementFormat] = useState<
     "package" | "source" | null
   >(null);
@@ -42,16 +46,17 @@ export default function Mt5Connection() {
     let active = true;
     let pending = false;
     async function poll() {
-      if (pending) return;
+      if (pending || actionInFlight.current) return;
       pending = true;
+      const current = ++connectionGeneration.current;
       try {
         const next = await (await mt5Api("connections")).json();
-        if (active) {
+        if (active && current === connectionGeneration.current) {
           setState(next);
           setNetworkError("");
         }
       } catch (e) {
-        if (active)
+        if (active && current === connectionGeneration.current)
           setNetworkError(
             e instanceof Error ? e.message : "Connection server unavailable",
           );
@@ -71,8 +76,10 @@ export default function Mt5Connection() {
   const c = state?.connections[0];
   const verifiedAccount =
     orders.data?.account &&
+    orders.data.connection?.id === c?.id &&
     orders.data.account.login === c?.installation?.accountLogin &&
-    orders.data.account.server === c?.installation?.brokerServer
+    orders.data.account.server === c?.installation?.brokerServer &&
+    orders.data.account.type === c?.installation?.accountType
       ? orders.data.account
       : null;
   const accountLabel =
@@ -89,26 +96,55 @@ export default function Mt5Connection() {
         ? "Connection Error"
         : "Disconnected";
   async function refresh() {
-    setState(await (await mt5Api("connections")).json());
+    const current = ++connectionGeneration.current;
+    const next = await (await mt5Api("connections")).json();
+    if (current === connectionGeneration.current) {
+      setState(next);
+      setNetworkError("");
+    }
+  }
+  async function refreshAfterAction() {
+    try {
+      await refresh();
+    } catch {
+      setNetworkError(
+        "The action succeeded, but connection status could not refresh. Check your connection before trying another action.",
+      );
+    }
   }
   async function generate() {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    connectionGeneration.current += 1;
     setBusy("generate");
     setError("");
     setNotice("");
     try {
-      await mt5Api("generate", {});
-      await refresh();
+      verifiedConnectionResponse(
+        await (await mt5Api("generate", {})).json(),
+        c?.id,
+      );
       setNotice(
         "HTTPS connection verified. Copy the URL and download your EA.",
       );
+      await refreshAfterAction();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Connection generation failed");
     } finally {
+      actionInFlight.current = false;
       setBusy("");
     }
   }
   async function copy() {
-    if (!state?.serverUrl) return;
+    if (actionInFlight.current) return;
+    setError("");
+    setNotice("");
+    if (!state?.serverUrl) {
+      setError("Generate the connection before copying its MT5 URL.");
+      return;
+    }
+    actionInFlight.current = true;
+    setBusy("copy");
     try {
       await navigator.clipboard.writeText(state.serverUrl);
       setNotice("MT5 URL copied. Paste it into the allowed WebRequest URLs.");
@@ -116,37 +152,48 @@ export default function Mt5Connection() {
       setError(
         "Clipboard permission is unavailable. Select the displayed URL to copy it.",
       );
+    } finally {
+      actionInFlight.current = false;
+      setBusy("");
     }
   }
   async function download(
     format: "package" | "source" = "package",
     replaceCredential = false,
   ) {
-    if (!state) return;
+    if (actionInFlight.current) return;
+    if (!state?.downloadReady || networkError) {
+      setError(
+        "Generate and verify the connection before downloading your EA.",
+      );
+      return;
+    }
+    actionInFlight.current = true;
+    connectionGeneration.current += 1;
     setBusy("download");
     setError("");
+    setNotice("");
     try {
-      const generated = await (await mt5Api("generate", {})).json();
+      const generated = verifiedConnectionResponse(
+        await (await mt5Api("generate", {})).json(),
+        c?.id,
+      );
       const response = await mt5Api("download", {
         connectionId: generated.connectionId,
         format,
         ...(replaceCredential ? { replaceCredential: true } : {}),
       });
-      const url = URL.createObjectURL(await response.blob());
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `ROCKET1000_EA.${format === "source" ? "mq5" : "zip"}`;
-      document.body.append(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-      await refresh();
+      await requestBrowserDownload(response, {
+        filename: `ROCKET1000_EA.${format === "source" ? "mq5" : "zip"}`,
+        contentTypes: [format === "source" ? "text/x-mql5" : "application/zip"],
+      });
       setReplacementFormat(null);
       setNotice(
         format === "source"
-          ? "Your private preconfigured ROCKET1000_EA.mq5 is downloaded. Open it in MetaEditor, save it in your MT5 MQL5/Experts/ROCKET1000 folder and compile. This source includes its connection configuration."
-          : "Your verified compiled EA and private configuration are in ROCKET1000_EA.zip. Extract it and copy its MQL5 folder into your MT5 data folder.",
+          ? "MetaEditor source download requested. Open the saved ROCKET1000_EA.mq5 in MetaEditor, save it in your MT5 MQL5/Experts/ROCKET1000 folder and compile. Its connection configuration is included."
+          : "EA package download requested. Extract the saved ROCKET1000_EA.zip and copy its MQL5 folder into your MT5 data folder. The compiled EA and private configuration are included.",
       );
+      await refreshAfterAction();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
       if (
@@ -155,6 +202,33 @@ export default function Mt5Connection() {
       )
         setReplacementFormat(format);
     } finally {
+      actionInFlight.current = false;
+      setBusy("");
+    }
+  }
+  async function revoke() {
+    if (actionInFlight.current) return;
+    setError("");
+    setNotice("");
+    if (!c?.installation || c.installation.revokedAt) {
+      setError("There is no active EA credential to revoke.");
+      return;
+    }
+    actionInFlight.current = true;
+    connectionGeneration.current += 1;
+    setBusy("revoke");
+    try {
+      const revoked = await (
+        await mt5Api("revoke", { connectionId: c.id })
+      ).json();
+      if (revoked?.ok !== true)
+        throw Error("The server did not confirm EA credential revocation.");
+      setNotice("EA credential revoked.");
+      await refreshAfterAction();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Revocation failed");
+    } finally {
+      actionInFlight.current = false;
       setBusy("");
     }
   }
@@ -193,6 +267,11 @@ export default function Mt5Connection() {
         <button
           className="action-outline"
           disabled={!state?.serverUrl || !!busy}
+          title={
+            !state?.serverUrl
+              ? "Generate and verify the HTTPS connection first."
+              : undefined
+          }
           onClick={() => {
             void copy();
           }}
@@ -202,6 +281,13 @@ export default function Mt5Connection() {
         <button
           className="action-white"
           disabled={!state?.downloadReady || !!busy || !!networkError}
+          title={
+            networkError ||
+            (!state?.downloadReady
+              ? state?.provisioningError ||
+                "Generate the verified connection before downloading."
+              : undefined)
+          }
           onClick={() => {
             void download();
           }}
@@ -245,16 +331,12 @@ export default function Mt5Connection() {
           <button
             className="action-outline"
             disabled={!c?.installation || !!c.installation.revokedAt || !!busy}
-            onClick={async () => {
-              if (!c) return;
-              try {
-                await mt5Api("revoke", { connectionId: c.id });
-                await refresh();
-                setNotice("EA credential revoked.");
-              } catch (e) {
-                setError(e instanceof Error ? e.message : "Revocation failed");
-              }
-            }}
+            title={
+              !c?.installation || c.installation.revokedAt
+                ? "No active EA credential is available to revoke."
+                : undefined
+            }
+            onClick={() => void revoke()}
           >
             Revoke EA access
           </button>
@@ -334,7 +416,10 @@ export default function Mt5Connection() {
         className="live-activation-dialog"
         aria-labelledby="replace-ea-title"
         aria-describedby="replace-ea-description"
-        onCancel={() => setReplacementFormat(null)}
+        onCancel={(event) => {
+          if (actionInFlight.current) event.preventDefault();
+          else setReplacementFormat(null);
+        }}
         onClose={() => setReplacementFormat(null)}
       >
         <h2 id="replace-ea-title">Replace this EA installation?</h2>

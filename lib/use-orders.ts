@@ -36,12 +36,15 @@ export type ManagedPosition = {
   fresh: boolean;
   receivedAt: number;
   canClose: boolean;
+  closeBlocker?: string | null;
   account: Pick<VerifiedAccount, "login" | "server" | "type" | "currency">;
 };
 export type OrderDashboard = {
   serverTime: number;
   connection: {
     id: string;
+    installationId?: string | null;
+    sessionId?: string | null;
     status: string;
     fresh: boolean;
     lastHeartbeat: number | null;

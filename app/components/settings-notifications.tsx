@@ -41,6 +41,7 @@ export default function SettingsNotifications({
   const initialized = useRef(false);
   const previousStatus = useRef<string | null>(null);
   const knownEvents = useRef(new Map<string, string>());
+  const currentPreferences = useRef(DEFAULT_PREFERENCES);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -48,7 +49,10 @@ export default function SettingsNotifications({
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
           const value: unknown = JSON.parse(stored);
-          if (savedPreferences(value)) setPreferences(value);
+          if (savedPreferences(value)) {
+            currentPreferences.current = value;
+            setPreferences(value);
+          }
         }
       } catch {
         setPersistent(false);
@@ -110,7 +114,12 @@ export default function SettingsNotifications({
   }, [ready, connectionStatus, events, preferences]);
 
   function toggle(key: "connectionAlerts" | "tradeUpdates") {
-    const next: Preferences = { ...preferences, [key]: !preferences[key] };
+    if (!ready) return;
+    const next: Preferences = {
+      ...currentPreferences.current,
+      [key]: !currentPreferences.current[key],
+    };
+    currentPreferences.current = next;
     setPreferences(next);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));

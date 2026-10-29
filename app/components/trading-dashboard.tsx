@@ -6,6 +6,12 @@ import AnalysisPanel from "./analysis-panel";
 import BrokerMarketTools from "./broker-chart";
 import { mt5Api } from "../../lib/mt5-client";
 import {
+  monotonicEventTime,
+  closeCommandFeedback,
+  closeNeedsReconciliation,
+  closeReviewFromResponse,
+} from "../../lib/trading-feedback.mjs";
+import {
   brokerNumber,
   brokerTime,
   useOrders,
@@ -84,7 +90,17 @@ type CloseReview = {
   receivedAt: number;
   validFor: number;
   accountKey: string;
+  installationId: string;
+  sessionId: string;
   ticket: string;
+};
+type CloseCommand = {
+  id: string;
+  status: string;
+  ticket: string;
+  accountKey: string;
+  symbol: string;
+  result?: unknown;
 };
 export function OpenOrders({
   data,
@@ -100,10 +116,40 @@ export function OpenOrders({
   const [issue, setIssue] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   const [expired, setExpired] = useState(false);
+  const [unconfirmed, setUnconfirmed] = useState(false);
+  const [command, setCommand] = useState<CloseCommand | null>(null);
+  const busyRequest = useRef(false);
+  const version = useRef(0);
+  const waitingForBroker = !!command && closeNeedsReconciliation(command);
+  const commandId = command?.id;
+  const commandAccount = command?.accountKey;
+  const commandTicket = command?.ticket;
+  const commandSymbol = command?.symbol;
+  const reviewedPosition = data?.positions.find(
+    (p) =>
+      p.ticket === review?.ticket && p.account.login === review?.account.login,
+  );
+  const reviewAvailable =
+    !!review &&
+    review.accountKey === data?.accountKey &&
+    !!data?.connection?.fresh &&
+    !!data.permissionActive &&
+    !!reviewedPosition?.canClose &&
+    (!data.connection.installationId ||
+      review.installationId === data.connection.installationId) &&
+    (!data.connection.sessionId ||
+      review.sessionId === data.connection.sessionId) &&
+    !error;
   useEffect(() => {
-    if (review && (review.accountKey !== data?.accountKey || error))
-      dialog.current?.close();
-  }, [data?.accountKey, error, review]);
+    version.current += 1;
+    if (review && !reviewAvailable) dialog.current?.close();
+  }, [
+    data?.accountKey,
+    data?.connection?.fresh,
+    error,
+    review,
+    reviewAvailable,
+  ]);
   useEffect(() => {
     if (!review) {
       dialog.current?.close();
@@ -117,37 +163,121 @@ export function OpenOrders({
     );
     return () => window.clearInterval(timer);
   }, [review]);
-  async function prepare(p: ManagedPosition, started: number) {
-    if (!p.canClose || error || !data) return;
+  useEffect(() => {
+    if (
+      !commandId ||
+      !commandTicket ||
+      !waitingForBroker ||
+      commandAccount !== data?.accountKey
+    )
+      return;
+    let active = true;
+    let pending = false;
+    async function poll() {
+      if (pending) return;
+      pending = true;
+      try {
+        const current = await (
+          await mt5Api(`trading?commandId=${encodeURIComponent(commandId!)}`)
+        ).json();
+        if (!active) return;
+        if (
+          current.id !== commandId ||
+          current.accountKey !== commandAccount ||
+          current.kind !== "CLOSE" ||
+          current.position !== commandTicket ||
+          current.symbol !== commandSymbol
+        )
+          throw new Error(
+            "The close request belongs to a different MT5 connection.",
+          );
+        setIssue(closeCommandFeedback(current));
+        setCommand({ ...current, ticket: commandTicket });
+        await refresh();
+      } catch (e) {
+        if (active)
+          setIssue(
+            `Close status is not verified: ${e instanceof Error ? e.message : "connection unavailable"}. Do not submit a replacement while its broker outcome is unknown.`,
+          );
+      } finally {
+        pending = false;
+      }
+    }
+    void poll();
+    const timer = window.setInterval(() => void poll(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [
+    commandId,
+    commandAccount,
+    commandTicket,
+    commandSymbol,
+    data?.accountKey,
+    refresh,
+    waitingForBroker,
+  ]);
+  useEffect(() => {
+    const stopped = () => {
+      version.current += 1;
+      dialog.current?.close();
+      setReview(null);
+    };
+    window.addEventListener("rocket-trading-stopped", stopped);
+    return () => {
+      version.current += 1;
+      window.removeEventListener("rocket-trading-stopped", stopped);
+    };
+  }, []);
+  async function prepare(p: ManagedPosition) {
+    if (
+      busyRequest.current ||
+      !p.canClose ||
+      error ||
+      !data ||
+      waitingForBroker
+    )
+      return;
+    if (review && unconfirmed) {
+      dialog.current?.showModal();
+      setIssue(
+        "Resolve the original close request before reviewing a replacement.",
+      );
+      return;
+    }
+    busyRequest.current = true;
+    const generation = version.current;
+    const started = monotonicEventTime();
     setBusy(true);
     setIssue("");
     try {
       const result = await (
         await mt5Api("trading", {
           action: "preview",
+          expectedAccountKey: data.accountKey,
+          expectedInstallationId: data.connection?.installationId,
+          expectedSessionId: data.connection?.sessionId,
           order: { kind: "CLOSE", position: p.ticket },
         })
       ).json();
-      const remaining =
-        result.expiresAt - (result.serverTime || data.serverTime);
-      if (
-        !result.id ||
-        result.order?.kind !== "CLOSE" ||
-        !Number.isFinite(remaining) ||
-        remaining <= 0
-      )
+      if (generation !== version.current) return;
+      const next = closeReviewFromResponse(result, {
+        account: data.account,
+        accountKey: data.accountKey,
+        position: p,
+        serverTime: data.serverTime,
+        started,
+      });
+      if (monotonicEventTime() - started >= next.validFor)
         throw new Error("This close review expired. Refresh and review again.");
       setExpired(false);
-      setReview({
-        ...result,
-        receivedAt: started,
-        validFor: Math.min(60_000, remaining),
-        accountKey: data.accountKey,
-        ticket: p.ticket,
-      });
+      setUnconfirmed(false);
+      setReview(next);
     } catch (e) {
       setIssue(e instanceof Error ? e.message : "Close could not be reviewed");
     } finally {
+      busyRequest.current = false;
       setBusy(false);
     }
   }
@@ -232,8 +362,15 @@ export function OpenOrders({
             <button
               type="button"
               className="action-outline"
-              disabled={busy || !!error || !p.canClose}
-              onClick={(event) => void prepare(p, event.timeStamp)}
+              disabled={busy || waitingForBroker || !!error || !p.canClose}
+              title={
+                error ||
+                p.closeBlocker ||
+                (waitingForBroker
+                  ? "Waiting for the existing broker command to finish."
+                  : undefined)
+              }
+              onClick={() => void prepare(p)}
             >
               Close Position
             </button>
@@ -249,6 +386,9 @@ export function OpenOrders({
       <p className="inner-caption">
         Only verified Rocket1000-owned positions appear here. External trades
         are excluded.
+        {positions.some((p) => !p.canClose)
+          ? ` Closing is unavailable: ${error || positions.find((p) => !p.canClose)?.closeBlocker || "current account authorization and fresh broker position data are required."}`
+          : ""}
       </p>
       {issue ? (
         <p className="inner-notice" role="status">
@@ -258,14 +398,22 @@ export function OpenOrders({
       <dialog
         className="live-activation-dialog"
         ref={dialog}
-        onCancel={() => setReview(null)}
-        onClose={() => setReview(null)}
+        onCancel={() => {
+          if (!unconfirmed) setReview(null);
+        }}
+        onClose={() => {
+          if (!unconfirmed || review?.accountKey !== data?.accountKey)
+            setReview(null);
+        }}
         aria-labelledby="close-review-title"
       >
         <button
           className="action-outline"
           type="button"
-          onClick={() => setReview(null)}
+          onClick={() => {
+            if (unconfirmed) dialog.current?.close();
+            else setReview(null);
+          }}
           disabled={busy}
           autoFocus
         >
@@ -294,44 +442,69 @@ export function OpenOrders({
             <button
               type="button"
               className="action-red"
-              disabled={
-                busy ||
-                expired ||
-                !!error ||
-                review.accountKey !== data?.accountKey ||
-                !data?.permissionActive
-              }
+              disabled={busy || (expired && !unconfirmed) || !reviewAvailable}
               onClick={async () => {
-                if (performance.now() - review.receivedAt >= review.validFor) {
+                if (busyRequest.current || !reviewAvailable) return;
+                if (
+                  !unconfirmed &&
+                  performance.now() - review.receivedAt >= review.validFor
+                ) {
                   setExpired(true);
                   return;
                 }
+                busyRequest.current = true;
+                const generation = version.current;
                 setBusy(true);
                 try {
-                  await mt5Api("trading", {
-                    action: "confirm",
-                    previewId: review.id,
+                  const result = await (
+                    await mt5Api("trading", {
+                      action: "confirm",
+                      previewId: review.id,
+                      expectedAccountKey: review.accountKey,
+                      expectedInstallationId: review.installationId,
+                      expectedSessionId: review.sessionId,
+                    })
+                  ).json();
+                  if (generation !== version.current) {
+                    await refresh();
+                    return;
+                  }
+                  const feedback = closeCommandFeedback(result);
+                  setCommand({
+                    ...result,
+                    ticket: review.ticket,
+                    accountKey: review.accountKey,
+                    symbol: review.order.symbol,
                   });
+                  setUnconfirmed(false);
                   setReview(null);
-                  setIssue(
-                    "Close submitted for broker verification. The position is updated only after confirmation.",
-                  );
+                  setIssue(feedback);
                   await refresh();
                 } catch (e) {
+                  const status = (e as Error & { status?: number }).status;
+                  const unknown = !status || status >= 500;
+                  setUnconfirmed(unknown);
                   setIssue(
-                    e instanceof Error ? e.message : "Close was not confirmed",
+                    unknown
+                      ? "Close submission was not confirmed. Retry this same confirmation to check the original request; do not create a replacement."
+                      : e instanceof Error
+                        ? e.message
+                        : "Close was not confirmed",
                   );
-                  setReview(null);
+                  if (!unknown) setReview(null);
                 } finally {
+                  busyRequest.current = false;
                   setBusy(false);
                 }
               }}
             >
               {busy
                 ? "Submitting…"
-                : expired
-                  ? "Review expired"
-                  : `Confirm ${review.account.type.toUpperCase()} close`}
+                : unconfirmed
+                  ? "Check original close request"
+                  : expired
+                    ? "Review expired"
+                    : `Confirm ${review.account.type.toUpperCase()} close`}
             </button>
           </>
         ) : null}

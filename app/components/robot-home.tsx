@@ -8,6 +8,7 @@ import EmergencyStop from "./emergency-stop";
 import { useOrders, brokerNumber, brokerTime } from "../../lib/use-orders";
 import { useAnalysis } from "../../lib/use-workspace";
 import { useAnalysisEngine, engineLabel } from "../../lib/use-analysis-engine";
+import { engineIdentityMatches } from "../../lib/engine-control-client.mjs";
 
 export default function RobotHome() {
   const orders = useOrders();
@@ -35,14 +36,31 @@ export default function RobotHome() {
   const executionOn =
     !engine.error &&
     !orders.error &&
+    engineIdentityMatches(engine.data, orders.data) &&
     !!engine.data?.executionAuthorized &&
     !!orders.data?.permissionActive;
+  const starting = ["start", "start-analysis"].includes(engine.pendingAction);
+  const stopping = ["stop", "emergency-stop"].includes(engine.pendingAction);
+  const analysisRequested = running || starting;
+  const executionRequested =
+    !!engine.data?.executionAuthorized ||
+    !!orders.data?.permissionActive ||
+    engine.pendingAction === "start";
   const strategy = latest?.strategy;
   const symbols = orders.data?.authorizedSymbols
     .filter((s) => s.active && s.fresh)
     .map((s) => s.symbol)
     .join(" · ");
   const issue = orders.error || analysis.error || engine.error;
+  const startBlockedReason =
+    orders.error ||
+    (!orders.data?.connection?.fresh
+      ? "A fresh authenticated MT5 connection is required."
+      : !engine.data?.controlRevision
+        ? "Waiting for the current AI engine status."
+        : !engineIdentityMatches(engine.data, orders.data)
+          ? "Waiting for account and EA session verification to agree."
+          : "");
   const refreshOrders = orders.refresh;
   const refreshEngine = engine.refresh;
   useEffect(() => {
@@ -55,6 +73,15 @@ export default function RobotHome() {
   }, [refreshOrders, refreshEngine]);
   function openConfiguration() {
     window.dispatchEvent(new Event("rocket-open-configuration"));
+  }
+  function startRequest(action: "start" | "start-analysis") {
+    return {
+      action,
+      expectedAccountKey: orders.data?.accountKey || "",
+      expectedInstallationId: orders.data?.connection?.installationId || "",
+      expectedSessionId: orders.data?.connection?.sessionId || "",
+      expectedControlRevision: engine.data?.controlRevision || "",
+    };
   }
   return (
     <div className="robot-stage">
@@ -186,16 +213,23 @@ export default function RobotHome() {
             <div className="engine-actions">
               <button
                 className="action-outline"
-                disabled={engine.busy}
+                disabled={
+                  stopping ||
+                  (engine.busy && !starting) ||
+                  (!analysisRequested && !!startBlockedReason)
+                }
+                title={!analysisRequested ? startBlockedReason : undefined}
                 onClick={() =>
-                  void engine.action({
-                    action: running ? "stop" : "start-analysis",
-                  })
+                  void engine.action(
+                    analysisRequested
+                      ? { action: "stop" }
+                      : startRequest("start-analysis"),
+                  )
                 }
               >
-                {engine.busy
+                {stopping
                   ? "Updating…"
-                  : running
+                  : analysisRequested
                     ? "Pause AI"
                     : "Resume Analysis"}
               </button>
@@ -229,36 +263,55 @@ export default function RobotHome() {
             </p>
             <div className="inner-kv">
               <span>Automatic execution</span>
-              <b>{executionOn ? "Authorized" : "OFF"}</b>
+              <b>
+                {issue ||
+                !engine.data ||
+                (engine.data.executionAuthorized &&
+                  !engineIdentityMatches(engine.data, orders.data))
+                  ? "Unavailable"
+                  : executionOn
+                    ? "Authorized"
+                    : "OFF"}
+              </b>
             </div>
             <p className="inner-caption">
-              {executionOn
-                ? "Every instruction still passes account, broker and adaptive risk checks."
-                : "Analysis can run with execution OFF. Account authorization is required before orders."}
+              {!executionRequested && startBlockedReason
+                ? startBlockedReason
+                : executionOn
+                  ? "Every instruction still passes account, broker and adaptive risk checks."
+                  : "Analysis can run with execution OFF. Account authorization is required before orders."}
             </p>
             <button
               className={executionOn ? "action-outline" : "action-red"}
-              disabled={engine.busy || !!issue}
+              disabled={
+                stopping ||
+                (!executionRequested && (engine.busy || !!startBlockedReason))
+              }
+              title={!executionRequested ? startBlockedReason : undefined}
               onClick={() => {
                 if (
-                  !executionOn &&
+                  !executionRequested &&
                   account?.type === "live" &&
                   !orders.data?.liveConfirmed
                 )
                   openConfiguration();
                 else
-                  void engine.action({
-                    action: executionOn ? "stop" : "start",
-                  });
+                  void engine.action(
+                    executionRequested
+                      ? { action: "stop" }
+                      : startRequest("start"),
+                  );
               }}
             >
-              {engine.busy
+              {stopping
                 ? "Verifying…"
-                : executionOn
+                : executionRequested
                   ? "Stop Auto Trading"
-                  : account?.type === "live" && !orders.data?.liveConfirmed
-                    ? "Review Live Authorization"
-                    : "Enable Auto Trading"}
+                  : engine.busy
+                    ? "Verifying…"
+                    : account?.type === "live" && !orders.data?.liveConfirmed
+                      ? "Review Live Authorization"
+                      : "Enable Auto Trading"}
             </button>
           </section>
           <section

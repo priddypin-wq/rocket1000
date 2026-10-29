@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { mt5Api } from "../../lib/mt5-client";
+import { confirmedOpenAiAction } from "../../lib/action-confirmation.mjs";
 
 type Metadata = {
   serverManaged?: boolean;
@@ -32,6 +33,7 @@ export default function OpenAiConnection() {
   const modelInput = useRef<HTMLInputElement>(null);
   const mounted = useRef(false);
   const generation = useRef(0);
+  const actionInFlight = useRef(false);
   useEffect(() => {
     mounted.current = true;
     const current = ++generation.current;
@@ -53,10 +55,28 @@ export default function OpenAiConnection() {
     };
   }, []);
   async function perform(action: "save" | "test" | "remove") {
+    if (actionInFlight.current) return;
     setIssue("");
     setNotice("");
     if (action !== "test" && status?.serverManaged !== false) {
       setIssue("The server operator manages the OpenAI connection.");
+      return;
+    }
+    if (action === "test" && !status?.configured) {
+      setIssue("Configure and save the OpenAI connection before testing it.");
+      return;
+    }
+    if (
+      action === "save" &&
+      (status?.encryptionReady ?? status?.storageReady) === false
+    ) {
+      setIssue(
+        "Secure server encryption must be configured before saving an API key.",
+      );
+      return;
+    }
+    if (action === "remove" && !status?.configured) {
+      setIssue("There is no saved OpenAI connection to remove.");
       return;
     }
     // Read only at submission. Clear immediately; saved keys never populate this field.
@@ -72,6 +92,7 @@ export default function OpenAiConnection() {
       );
       return;
     }
+    actionInFlight.current = true;
     setBusy(action);
     const current = ++generation.current;
     try {
@@ -83,6 +104,7 @@ export default function OpenAiConnection() {
         })
       ).json();
       if (!mounted.current || current !== generation.current) return;
+      confirmedOpenAiAction(metadata, action);
       setStatus(metadata);
       setRemoving(false);
       setNotice(
@@ -90,7 +112,8 @@ export default function OpenAiConnection() {
           ? "API key saved securely. Test the connection before starting AI."
           : action === "remove"
             ? "API key removed. AI analysis and new automated orders are stopped. Save and verify a key before restarting."
-            : metadata.verified || metadata.connection?.connected
+            : metadata.verified === true ||
+                metadata.connection?.connected === true
               ? "OpenAI connection verified. No trades were submitted."
               : "Verification did not succeed. Review the connection error.",
       );
@@ -113,11 +136,13 @@ export default function OpenAiConnection() {
         /* Keep the last confirmed metadata. */
       }
     } finally {
+      actionInFlight.current = false;
       if (mounted.current && current === generation.current) setBusy("");
     }
   }
   const verified =
-    !issue && (status?.verified || status?.connection?.connected);
+    !issue &&
+    (status?.verified === true || status?.connection?.connected === true);
   const storageReady = status?.encryptionReady ?? status?.storageReady;
   // Missing/loading metadata stays in the default environment-only mode.
   const serverManaged = status?.serverManaged !== false;

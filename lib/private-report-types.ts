@@ -17,6 +17,7 @@ export type BrokerChartData = {
 export type PrivateReport = {
   version: number;
   generatedAt: number;
+  accountKey?: string;
   scope: string;
   historyComplete: false;
   connection: { status: string; fresh: boolean; lastHeartbeat: number | null };

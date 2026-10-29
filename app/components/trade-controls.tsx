@@ -39,6 +39,8 @@ export default function TradeControls({
   const [stopping, setStopping] = useState(false);
   const [stopNotice, setStopNotice] = useState("");
   const request = useRef(0);
+  const actionPending = useRef(false);
+  const stopPending = useRef(false);
   const engine = useAnalysisEngine();
   const refresh = useCallback(async () => {
     const current = ++request.current;
@@ -74,6 +76,9 @@ export default function TradeControls({
     };
   }, [refresh]);
   const action = async (body: unknown) => {
+    if (actionPending.current || stopPending.current) return null;
+    actionPending.current = true;
+    request.current += 1;
     setBusy(true);
     setIssue("");
     try {
@@ -86,11 +91,13 @@ export default function TradeControls({
       );
       return null;
     } finally {
+      actionPending.current = false;
       setBusy(false);
     }
   };
   const account = data?.account;
-  const running = data?.automation?.state === "running";
+  const running =
+    data?.automation?.state === "running" && data.permissionActive;
   return (
     <div className="settings-simple">
       {aiStatus}
@@ -365,10 +372,14 @@ export default function TradeControls({
           className="action-red"
           disabled={stopping}
           onClick={async () => {
+            if (stopPending.current) return;
+            stopPending.current = true;
+            request.current += 1;
             setStopping(true);
             setStopNotice("");
             try {
               await mt5Api("stop", {});
+              window.dispatchEvent(new Event("rocket-trading-stopped"));
               await Promise.all([refresh(), engine.refresh()]);
               setStopNotice(
                 "Emergency Stop confirmed. New automated orders are disabled; existing positions remain open.",
@@ -380,6 +391,7 @@ export default function TradeControls({
                   : "Stop was not confirmed. Check MT5.",
               );
             } finally {
+              stopPending.current = false;
               setStopping(false);
             }
           }}

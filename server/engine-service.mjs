@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ApiError } from "./errors.mjs";
+import {
+  assertRequestedAccount,
+  executionIdentity,
+} from "./requested-account.mjs";
 import { provisioningService } from "./provisioning.mjs";
 import { analysisService } from "./analysis-service.mjs";
 import { analyzeMarket } from "./ai-analysis.mjs";
@@ -202,6 +206,11 @@ export function engineService(
     }
     return {
       state,
+      ...executionIdentity(executionContext),
+      controlRevision:
+        analysisActivation?.generation ||
+        activation?.generation ||
+        "uninitialized",
       reason,
       lastCycle: row?.last_cycle ? Number(row.last_cycle) : null,
       nextCycle:
@@ -242,9 +251,37 @@ export function engineService(
   }
   async function start(
     uid,
-    { automatic = false, generation = null, analysisOnly = false } = {},
+    {
+      automatic = false,
+      generation = null,
+      analysisOnly = false,
+      expectedControlRevision,
+      ...expectedAccount
+    } = {},
   ) {
     const previous = await status(uid);
+    assertRequestedAccount(previous, expectedAccount);
+    if (
+      expectedControlRevision !== undefined &&
+      (typeof expectedControlRevision !== "string" ||
+        !/^(?:uninitialized|[a-f0-9-]{36})$/.test(expectedControlRevision))
+    )
+      throw new ApiError(
+        400,
+        "Invalid engine control revision.",
+        "AI_CONTROL_INVALID",
+      );
+    if (
+      expectedControlRevision !== undefined &&
+      expectedControlRevision !== previous.controlRevision
+    )
+      throw new ApiError(
+        409,
+        "The engine was stopped or changed. Refresh before starting again.",
+        "AI_START_CANCELLED",
+      );
+    const requestedControlRevision =
+      expectedControlRevision ?? previous.controlRevision;
     if (
       ["scheduled", "running"].includes(previous.state) &&
       (analysisOnly
@@ -286,7 +323,26 @@ export function engineService(
         `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
         [connection.id],
       );
+      const [analysisControl] = await tx.query(
+        "SELECT generation FROM rocket_analysis_activation WHERE connection_id=?",
+        [connection.id],
+      );
+      const [executionControl] = await tx.query(
+        "SELECT generation FROM rocket_engine_activation WHERE connection_id=?",
+        [connection.id],
+      );
+      if (
+        (analysisControl?.generation ||
+          executionControl?.generation ||
+          "uninitialized") !== requestedControlRevision
+      )
+        throw new ApiError(
+          409,
+          "Start was stopped or superseded. Refresh before starting again.",
+          "AI_START_CANCELLED",
+        );
       let ctx = await tradeContext(tx, connection.id, now());
+      assertRequestedAccount(executionIdentity(ctx), expectedAccount);
       if (
         !ctx.market ||
         !ctx.i?.registered_at ||
@@ -439,6 +495,7 @@ export function engineService(
           [connection.id],
         );
         const ctx = await tradeContext(tx, connection.id, now());
+        assertRequestedAccount(executionIdentity(ctx), expectedAccount);
         const activation = await analysisActivationState(tx, connection.id);
         if (
           activation.paused ||

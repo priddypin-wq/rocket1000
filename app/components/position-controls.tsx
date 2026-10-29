@@ -1,4 +1,5 @@
 "use client";
+import { useRef, useState } from "react";
 export type BrokerPosition = {
   ticket?: string;
   identifier?: string;
@@ -24,6 +25,30 @@ export default function PositionControls({
   permitted: boolean;
   onReview: (order: unknown) => Promise<void>;
 }) {
+  const pending = useRef(false);
+  const [issue, setIssue] = useState("");
+  async function review(position: BrokerPosition, order: unknown) {
+    if (
+      pending.current ||
+      busy ||
+      !available ||
+      !permitted ||
+      !position.managed ||
+      !position.ticket
+    )
+      return;
+    pending.current = true;
+    setIssue("");
+    try {
+      await onReview(order);
+    } catch (e) {
+      setIssue(
+        e instanceof Error ? e.message : "Position review was not confirmed.",
+      );
+    } finally {
+      pending.current = false;
+    }
+  }
   return (
     <section className="inner-card">
       <div className="inner-card-title">
@@ -47,6 +72,7 @@ export default function PositionControls({
               {p.managed
                 ? "Opened by this connection"
                 : "External position — automatic management excluded"}
+              {issue ? ` · ${issue}` : ""}
             </p>
             {p.managed ? (
               <>
@@ -55,7 +81,7 @@ export default function PositionControls({
                     e.preventDefault();
                     if (!available || !permitted || busy) return;
                     const values = new FormData(e.currentTarget);
-                    await onReview({
+                    await review(p, {
                       kind: "MODIFY",
                       position: p.ticket,
                       stop: Number(values.get("stop")),
@@ -89,16 +115,16 @@ export default function PositionControls({
                   <button
                     className="action-outline"
                     type="submit"
-                    disabled={busy || !permitted || !available}
+                    disabled={busy || !permitted || !available || !p.ticket}
                   >
                     Review modification
                   </button>
                 </form>
                 <button
                   className="action-outline"
-                  disabled={busy || !permitted || !available}
+                  disabled={busy || !permitted || !available || !p.ticket}
                   onClick={() =>
-                    void onReview({ kind: "CLOSE", position: p.ticket })
+                    void review(p, { kind: "CLOSE", position: p.ticket })
                   }
                 >
                   Review close

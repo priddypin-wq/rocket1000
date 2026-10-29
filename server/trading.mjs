@@ -1,6 +1,10 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { ApiError } from "./errors.mjs";
 import {
+  assertRequestedAccount,
+  executionIdentity,
+} from "./requested-account.mjs";
+import {
   validateSnapshot,
   adaptiveProfile,
   decisionBar,
@@ -451,7 +455,7 @@ export async function tradeContext(tx, cid, now) {
   )
     blockers.push("A fresh authenticated MT5 heartbeat is required.");
   if (!x || x.installation_id !== i?.id || now - Number(x.received_at) > 30000)
-    blockers.push("Install EA 6.00 and wait for fresh execution checks.");
+    blockers.push("Install the current ROCKET1000 EA and wait for fresh execution checks.");
   let market = null,
     execution = null;
   try {
@@ -1168,6 +1172,8 @@ export function tradingService(db, { now = Date.now } = {}) {
         return { ok: true };
       }
       const ctx = await context(tx, cid, now());
+      if (["preview", "confirm", "prepare-live"].includes(input?.action))
+        assertRequestedAccount(executionIdentity(ctx), input);
       if (input?.action === "settings") {
         const value = validateTradeSettings(input.settings);
         await disableTrading(tx, cid, now());
@@ -1188,7 +1194,15 @@ export function tradingService(db, { now = Date.now } = {}) {
       }
       if (input?.action === "prepare-live") {
         if (
-          Object.keys(input).length !== 1 ||
+          Object.keys(input).some(
+            (key) =>
+              ![
+                "action",
+                "expectedAccountKey",
+                "expectedInstallationId",
+                "expectedSessionId",
+              ].includes(key),
+          ) ||
           ctx.i?.account_type !== "live" ||
           !ctx.i.registered_at ||
           !ctx.x ||
@@ -1235,6 +1249,8 @@ export function tradingService(db, { now = Date.now } = {}) {
           engineVersion: ENGINE_VERSION,
           expiresAt,
           settingsRevision: ctx.revision,
+          installationId: ctx.i.id,
+          sessionId: ctx.x.session_id,
         };
       }
       if (input?.action === "confirm-live") {
@@ -1404,6 +1420,7 @@ export function tradingService(db, { now = Date.now } = {}) {
           order,
           expiresAt,
           serverTime: now(),
+          ...executionIdentity(ctx),
           account: {
             login: ctx.i.account_login,
             type: ctx.i.account_type,
@@ -1418,8 +1435,8 @@ export function tradingService(db, { now = Date.now } = {}) {
         )
           throw new ApiError(400, "Invalid review.");
         const [prior] = await tx.query(
-          "SELECT id,status FROM rocket_trade_commands WHERE preview_id=? AND connection_id=?",
-          [input.previewId, cid],
+          "SELECT t.id,t.status FROM rocket_trade_commands t JOIN rocket_command_accounts a ON a.command_id=t.id WHERE t.preview_id=? AND t.connection_id=? AND a.account_key=?",
+          [input.previewId, cid, ctx.consent.key],
         );
         if (prior) return prior;
         const [p] = await tx.query(
@@ -1487,7 +1504,60 @@ export function tradingService(db, { now = Date.now } = {}) {
       throw new ApiError(400, "Unknown trading action.");
     });
   }
-  return { status, act };
+  async function commandStatus(uid, id) {
+    if (typeof id !== "string" || !idPattern.test(id))
+      throw new ApiError(400, "Invalid broker command.");
+    return db.transaction(async (tx) => {
+      const cid = await owned(tx, uid);
+      const ctx = await context(tx, cid, now());
+      const [command] = await tx.query(
+        "SELECT t.* FROM rocket_trade_commands t JOIN rocket_command_accounts a ON a.command_id=t.id WHERE t.id=? AND t.connection_id=? AND a.account_key=?",
+        [id, cid, ctx.consent.key],
+      );
+      if (!command)
+        throw new ApiError(
+          404,
+          "Broker command not found for the connected account.",
+        );
+      const order = JSON.parse(command.payload);
+      const result = command.result ? JSON.parse(command.result) : null;
+      // Return only broker-result metadata. Command leases and private EA
+      // credentials are never part of a dashboard confirmation response.
+      const safeResult =
+        result && typeof result === "object"
+          ? Object.fromEntries(
+              [
+                "retcode",
+                "deal",
+                "order",
+                "partial",
+                "reconciled",
+                "evidence",
+                "acknowledgedAt",
+                "filledVolume",
+                "filledPrice",
+              ]
+                .filter((key) => result[key] !== undefined)
+                .map((key) => [key, result[key]]),
+            )
+          : null;
+      return {
+        id: command.id,
+        status: command.status,
+        kind: order.kind || "OPEN",
+        symbol: order.symbol,
+        position: order.position || null,
+        requestedVolume: order.volume,
+        createdAt: Number(command.created_at),
+        result: safeResult,
+        connectionId: cid,
+        accountKey: ctx.consent.key,
+        installationId: command.installation_id,
+        sessionId: command.session_id,
+      };
+    });
+  }
+  return { status, act, commandStatus };
 }
 
 export async function enqueueCommand(

@@ -1,10 +1,12 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { mt5Api } from "../../lib/mt5-client";
 import { useAnalysisEngine, engineLabel } from "../../lib/use-analysis-engine";
 import { useOrders, brokerNumber, brokerTime } from "../../lib/use-orders";
 import type { AutoState } from "../../lib/trading-types";
 import OpenAiConnection from "./openai-connection";
+import { liveReviewMatches } from "../../lib/live-review.mjs";
+import { engineIdentityMatches } from "../../lib/engine-control-client.mjs";
 
 type Diagnostics = AutoState & {
   blockers: string[];
@@ -22,6 +24,9 @@ type LiveReview = {
   accountKey: string;
   engineVersion: string;
   expiresAt: number;
+  installationId: string;
+  sessionId: string;
+  settingsRevision: string;
 };
 
 export default function EngineDiagnostics() {
@@ -37,6 +42,9 @@ export default function EngineDiagnostics() {
   const [accepted, setAccepted] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(0);
+  const mounted = useRef(false);
+  const mutating = useRef(false);
+  const requestRevision = useRef(0);
   const refresh = useCallback(async () => {
     const [trade, audit] = await Promise.all([
       mt5Api("trading").then((r) => r.json()),
@@ -48,47 +56,82 @@ export default function EngineDiagnostics() {
     };
   }, []);
   useEffect(() => {
-    let mounted = true,
-      pending = false;
+    mounted.current = true;
+    let pending = false,
+      alive = true;
     async function poll() {
-      if (pending) return;
+      if (pending || mutating.current) return;
       pending = true;
+      const revision = requestRevision.current;
       try {
         const next = await refresh();
-        if (mounted) {
+        if (alive && mounted.current && revision === requestRevision.current) {
           setData(next.trade);
           setEvents(next.events);
           setError("");
         }
       } catch (e) {
-        if (mounted)
+        if (alive && mounted.current && revision === requestRevision.current)
           setError(e instanceof Error ? e.message : "Diagnostics unavailable");
       } finally {
         pending = false;
+        if (
+          alive &&
+          mounted.current &&
+          revision !== requestRevision.current &&
+          !mutating.current
+        )
+          void poll();
       }
     }
     void poll();
     const timer = window.setInterval(() => void poll(), 5000);
     const clock = window.setInterval(() => setNow(Date.now()), 1000);
+    const stopped = () => {
+      requestRevision.current += 1;
+      setData(null);
+      setReview(null);
+      setAccepted(false);
+      setNotice("");
+      void poll();
+    };
+    window.addEventListener("rocket-trading-stopped", stopped);
     return () => {
-      mounted = false;
+      alive = false;
+      mounted.current = false;
+      requestRevision.current += 1;
       window.clearInterval(timer);
       window.clearInterval(clock);
+      window.removeEventListener("rocket-trading-stopped", stopped);
     };
   }, [refresh]);
-  const reviewValid =
-    !!review &&
-    review.accountKey === data?.accountKey &&
-    review.accountKey === orders.data?.accountKey &&
-    !error &&
-    !orders.error &&
-    review.expiresAt > now;
+  const reviewValid = liveReviewMatches(
+    review,
+    data,
+    orders.data,
+    now,
+    !!error || !!orders.error,
+  );
   async function authorize(confirm: boolean) {
+    if (mutating.current) return;
+    mutating.current = true;
+    const revision = ++requestRevision.current;
     setBusy(true);
     setNotice("");
     setError("");
     try {
-      if (confirm && (!reviewValid || !accepted || !review))
+      if (
+        confirm &&
+        (!liveReviewMatches(
+          review,
+          data,
+          orders.data,
+          Date.now(),
+          !!error || !!orders.error,
+        ) ||
+          !accepted ||
+          !review)
+      )
         throw Error(
           "Review this current Live account again before confirming.",
         );
@@ -101,29 +144,59 @@ export default function EngineDiagnostics() {
                 id: review!.id,
                 accountKey: review!.accountKey,
               }
-            : { action: "prepare-live" },
+            : {
+                action: "prepare-live",
+                expectedAccountKey: data?.accountKey,
+                expectedInstallationId: data?.installationId,
+                expectedSessionId: data?.sessionId,
+              },
         )
       ).json();
+      if (!mounted.current || revision !== requestRevision.current) return;
       if (confirm) {
+        if (
+          result?.ok !== true ||
+          result.liveConfirmed !== true ||
+          result.accountKey !== review?.accountKey ||
+          result.executionEnabled !== false
+        )
+          throw Error("The server did not confirm this account approval.");
         setReview(null);
         setAccepted(false);
         setNotice(
           "Account approval saved. Auto Trading remains OFF until explicitly enabled.",
         );
       } else {
+        if (
+          !result?.id ||
+          result.account?.type !== "live" ||
+          result.accountKey !== data?.accountKey ||
+          !data?.installationId ||
+          !data.sessionId ||
+          result.installationId !== data.installationId ||
+          result.sessionId !== data.sessionId ||
+          result.settingsRevision !== data.settingsRevision
+        )
+          throw Error(
+            "The connected account changed. Review the current Live account again.",
+          );
         setReview(result);
         setAccepted(false);
         setNow(Date.now());
       }
       const next = await refresh();
+      if (!mounted.current || revision !== requestRevision.current) return;
       setData(next.trade);
       setEvents(next.events);
-      await orders.refresh();
-      await engine.refresh();
+      await Promise.all([orders.refresh(), engine.refresh()]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Account authorization failed");
+      if (mounted.current && revision === requestRevision.current)
+        setError(
+          e instanceof Error ? e.message : "Account authorization failed",
+        );
     } finally {
-      setBusy(false);
+      mutating.current = false;
+      if (mounted.current) setBusy(false);
     }
   }
   return (
@@ -140,9 +213,17 @@ export default function EngineDiagnostics() {
         <div className="inner-kv">
           <span>Execution mode</span>
           <b>
-            {engine.data?.executionAuthorized
-              ? "Authorized"
-              : "Analysis only / execution OFF"}
+            {engine.error ||
+            !engine.data ||
+            (engine.data.executionAuthorized &&
+              (!engineIdentityMatches(engine.data, orders.data) ||
+                orders.error))
+              ? "Unavailable"
+              : engine.data.executionAuthorized &&
+                  engineIdentityMatches(engine.data, orders.data) &&
+                  !orders.error
+                ? "Authorized"
+                : "Analysis only / execution OFF"}
           </b>
         </div>
         <p>{engine.data?.reason || "Waiting for verified engine status."}</p>
@@ -277,7 +358,12 @@ export default function EngineDiagnostics() {
         <div className="inner-kv">
           <span>Current execution permission</span>
           <b>
-            {error
+            {error ||
+            orders.error ||
+            !data ||
+            data.accountKey !== orders.data?.accountKey ||
+            data.installationId !== orders.data?.connection?.installationId ||
+            data.sessionId !== orders.data?.connection?.sessionId
               ? "Unavailable"
               : data?.permissionActive
                 ? "Authorized"
@@ -328,6 +414,7 @@ export default function EngineDiagnostics() {
             <label>
               <input
                 type="checkbox"
+                disabled={busy || !reviewValid}
                 checked={accepted}
                 onChange={(event) => setAccepted(event.target.checked)}
               />{" "}
@@ -344,7 +431,10 @@ export default function EngineDiagnostics() {
               <button
                 className="action-outline"
                 disabled={busy}
-                onClick={() => setReview(null)}
+                onClick={() => {
+                  setReview(null);
+                  setAccepted(false);
+                }}
               >
                 Cancel
               </button>
