@@ -7,8 +7,15 @@ import {
 import { provisioningService } from "./provisioning.mjs";
 import { analysisService } from "./analysis-service.mjs";
 import { analyzeMarket } from "./ai-analysis.mjs";
-import { openaiCredentialService as credentialService } from "./openai-credentials.mjs";
-import { usageService, defaultDailyBudget } from "./ai-usage.mjs";
+import {
+  openaiCredentialService as credentialService,
+  openaiServerManaged,
+} from "./openai-credentials.mjs";
+import {
+  usageService,
+  defaultDailyBudget,
+  billingPauseCodes,
+} from "./ai-usage.mjs";
 import {
   tradeContext,
   disableTrading,
@@ -88,7 +95,7 @@ export function engineService(
   // a constant "environment" revision, this invalidates jobs after rotation,
   // including a response already in flight when the server secret changes.
   const credentialRevision = (metadata) =>
-    !credentials && env.ROCKET_OPENAI_SERVER_MANAGED !== "0"
+    !credentials && openaiServerManaged(env)
       ? environmentCredentialRevision(env)
       : String(metadata?.revision || "environment");
   // Only a successfully enabled execution session creates this intent. Analysis
@@ -137,12 +144,15 @@ export function engineService(
     const [row] = await db.query(
       "SELECT mode,last_seen FROM rocket_engine_scheduler WHERE mode IN ('worker','cron') OR (mode='queue' AND id IN (?,?)) ORDER BY last_seen DESC LIMIT 1",
       [
-        connectionId ? `queue:${connectionId}:probe` : "",
+        connectionId && !runId ? `queue:${connectionId}:probe` : "",
         connectionId && runId ? `queue:${connectionId}:${runId}` : "",
       ],
     );
     return {
-      configured: !!row && now() - Number(row.last_seen) < 150000,
+      configured:
+        !!row &&
+        Number(row.last_seen) <= now() + 2000 &&
+        now() - Number(row.last_seen) < 150000,
       mode: row?.mode || "not-started",
       lastSeen: row ? Number(row.last_seen) : null,
     };
@@ -171,7 +181,16 @@ export function engineService(
           [c.id],
         )
       : [];
-    const ready = await scheduler(c?.id, row?.run_id);
+    const activeRun = ["scheduled", "running"].includes(row?.state);
+    const ready = await scheduler(c?.id, activeRun ? row.run_id : null);
+    const bootstrap =
+      activeRun && !ready.configured ? await scheduler(c?.id) : null;
+    const startingQueue =
+      row?.state === "scheduled" &&
+      Number(row.last_cycle) < Number(row.next_cycle) &&
+      Math.abs(now() - Number(row.next_cycle)) < 90000 &&
+      bootstrap?.configured &&
+      bootstrap.mode === "queue";
     const [activation] = c
       ? await db.query(
           "SELECT * FROM rocket_engine_activation WHERE connection_id=?",
@@ -190,8 +209,9 @@ export function engineService(
       ? await db.transaction((tx) => tradeContext(tx, c.id, now()))
       : null;
     let state = row?.state || "stopped",
-      reason = row?.reason || activation?.reason || null;
-    if (["scheduled", "running"].includes(state) && !ready.configured) {
+      reason =
+        row?.reason || analysisActivation?.reason || activation?.reason || null;
+    if (activeRun && !ready.configured && !startingQueue) {
       state = "suspended";
       reason =
         "Analysis worker is offline. No new analysis or automated orders are authorized.";
@@ -203,6 +223,14 @@ export function engineService(
       state = "suspended";
       reason =
         "Previous analysis was interrupted. No order is retried; automatic readiness will be checked again.";
+    }
+    if (
+      activeRun &&
+      executionContext?.subscription &&
+      !executionContext.subscription.allowed
+    ) {
+      state = "suspended";
+      reason = executionContext.subscription.reason;
     }
     return {
       state,
@@ -220,7 +248,7 @@ export function engineService(
           ? Number(row.next_cycle)
           : null,
       frequencySeconds: row ? Number(row.frequency_seconds) : 300,
-      scheduler: ready,
+      scheduler: startingQueue ? bootstrap : ready,
       usage: await usage.totals(uid),
       engineVersion: ENGINE_VERSION,
       mode:
@@ -293,6 +321,7 @@ export function engineService(
       "SELECT id FROM rocket_direct_connections WHERE user_id=?",
       [uid],
     );
+    await usage.checkEntitlement(uid);
     if (!(await scheduler(owned?.id)).configured)
       throw new ApiError(
         503,
@@ -341,7 +370,7 @@ export function engineService(
           "Start was stopped or superseded. Refresh before starting again.",
           "AI_START_CANCELLED",
         );
-      let ctx = await tradeContext(tx, connection.id, now());
+      const ctx = await tradeContext(tx, connection.id, now());
       assertRequestedAccount(executionIdentity(ctx), expectedAccount);
       if (
         !ctx.market ||
@@ -376,21 +405,6 @@ export function engineService(
           "Authorize this exact Live account before enabling execution.",
           "LIVE_AUTHORIZATION_REQUIRED",
         );
-      if (ctx.settings.strategy !== "adaptive") {
-        await tx.query(
-          "UPDATE rocket_trade_preferences SET revision=?,payload=? WHERE connection_id=?",
-          [
-            randomUUID(),
-            JSON.stringify({ ...ctx.settings, strategy: "adaptive" }),
-            connection.id,
-          ],
-        );
-        await tx.query(
-          "DELETE FROM rocket_order_previews WHERE connection_id=?",
-          [connection.id],
-        );
-        ctx = await tradeContext(tx, connection.id, now());
-      }
       requireMultiTimeframe(ctx.market);
       expectedTerminalId = ctx.execution.terminalId;
       const activation = await analysisActivationState(tx, connection.id);
@@ -450,7 +464,7 @@ export function engineService(
         ],
       );
       await tx.query(
-        "INSERT INTO rocket_analysis_engine(connection_id,run_id,state,installation_id,session_id,account_key,key_revision,daily_budget_microusd,next_cycle,lease_until) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET run_id=excluded.run_id,state=excluded.state,installation_id=excluded.installation_id,session_id=excluded.session_id,account_key=excluded.account_key,key_revision=excluded.key_revision,next_cycle=excluded.next_cycle,last_bar=0,lease_until=excluded.lease_until,reason=NULL",
+        "INSERT INTO rocket_analysis_engine(connection_id,run_id,state,installation_id,session_id,account_key,key_revision,daily_budget_microusd,next_cycle,lease_until,last_bar) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET run_id=excluded.run_id,state=excluded.state,installation_id=excluded.installation_id,session_id=excluded.session_id,account_key=excluded.account_key,key_revision=excluded.key_revision,next_cycle=excluded.next_cycle,last_bar=excluded.last_bar,last_cycle=0,lease_until=excluded.lease_until,reason=NULL",
         [
           connection.id,
           operationId,
@@ -462,6 +476,11 @@ export function engineService(
           Math.round(defaultDailyBudget(env) * 1e6),
           now(),
           now() + 90000,
+          automatic &&
+          ctx.analysisEngine?.installation_id === ctx.i.id &&
+          ctx.analysisEngine?.account_key === ctx.consent.key
+            ? Number(ctx.analysisEngine.last_bar)
+            : 0,
         ],
       );
     });
@@ -579,7 +598,9 @@ export function engineService(
       "SELECT id FROM rocket_direct_connections WHERE user_id=?",
       [uid],
     );
-    if (!c || !(await scheduler(c.id)).configured) return status(uid);
+    if (!c) return status(uid);
+    const schedulerReady = await scheduler(c.id);
+    if (!schedulerReady.configured) return status(uid);
     let generation,
       analysisOnly = true;
     try {
@@ -603,8 +624,14 @@ export function engineService(
           Number(ctx.analysisEngine.lease_until) <= now();
         if (
           !interrupted &&
-          ctx.analysisEngineActive &&
-          (a.mode === "analysis" || ctx.permissionActive)
+          ((ctx.analysisEngineActive &&
+            (a.mode === "analysis" || ctx.permissionActive)) ||
+            (schedulerReady.mode === "queue" &&
+              ctx.analysisEngine?.state === "scheduled" &&
+              Number(ctx.analysisEngine.last_cycle) <
+                Number(ctx.analysisEngine.next_cycle) &&
+              Math.abs(now() - Number(ctx.analysisEngine.next_cycle)) < 90000 &&
+              Number(ctx.analysisEngine.last_cycle) === 0))
         )
           return null;
         if (
@@ -656,7 +683,17 @@ export function engineService(
           );
           return null;
         }
-        requireMultiTimeframe(ctx.market);
+        try {
+          requireMultiTimeframe(ctx.market);
+          await usage.checkEntitlement(ctx.c.user_id, tx);
+        } catch (error) {
+          if (!(error instanceof ApiError)) throw error;
+          await tx.query(
+            "UPDATE rocket_analysis_activation SET reason=?,next_attempt=? WHERE connection_id=?",
+            [error.message, now() + 60000, c.id],
+          );
+          return null;
+        }
         if (a.mode === "execution" && ctx.unresolved) {
           await tx.query(
             "UPDATE rocket_analysis_activation SET reason=? WHERE connection_id=?",
@@ -834,6 +871,7 @@ export function engineService(
             "MT5_DATA_STALE",
           );
         requireMultiTimeframe(ctx.market);
+        await usage.checkEntitlement(ctx.c.user_id, tx);
         const bar = decisionBar(ctx.market);
         if (Number(a.last_bar) === bar) {
           await tx.query(
@@ -867,7 +905,7 @@ export function engineService(
       const guard = async (tx) => {
         if (
           !credentials &&
-          env.ROCKET_OPENAI_SERVER_MANAGED !== "0" &&
+          openaiServerManaged(env) &&
           credentialRevision(metadata) !== job.key_revision
         )
           throw new ApiError(
@@ -962,11 +1000,20 @@ export function engineService(
           error instanceof ApiError
             ? error.message
             : "Analysis service failed. Check Settings and restart explicitly.";
-        await stopAnalysis(tx, cid, now(), reason);
-        await tx.query(
-          "UPDATE rocket_analysis_engine SET state='suspended' WHERE connection_id=?",
-          [cid],
-        );
+        if (billingPauseCodes.has(error?.code)) {
+          // Preserve the independently authorized session and existing broker
+          // protections. The worker retries entitlement without paid requests.
+          await tx.query(
+            "UPDATE rocket_analysis_engine SET state='scheduled',lease_until=0,next_cycle=?,reason=? WHERE connection_id=?",
+            [now() + 300000, reason, cid],
+          );
+        } else {
+          await stopAnalysis(tx, cid, now(), reason);
+          await tx.query(
+            "UPDATE rocket_analysis_engine SET state='suspended' WHERE connection_id=?",
+            [cid],
+          );
+        }
         await tx.query(
           "UPDATE rocket_engine_activation SET next_attempt=?,lease_until=0,reason=? WHERE connection_id=? AND paused=0",
           [now() + 300000, reason, cid],

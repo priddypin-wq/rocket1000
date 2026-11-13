@@ -52,6 +52,9 @@ export default function RobotHome() {
     .map((s) => s.symbol)
     .join(" · ");
   const issue = orders.error || analysis.error || engine.error;
+  const needsAccount =
+    issue.includes("Sign in to ROCKET1000") ||
+    issue.includes("Continue separately in Account");
   const startBlockedReason =
     orders.error ||
     (!orders.data?.connection?.fresh
@@ -208,6 +211,14 @@ export default function RobotHome() {
             {issue ? (
               <p className="inner-error" role="alert">
                 {issue}
+                {needsAccount ? (
+                  <>
+                    {" "}
+                    <Link className="inner-text-link" href="/account">
+                      Open Account
+                    </Link>
+                  </>
+                ) : null}
               </p>
             ) : null}
             <div className="engine-actions">

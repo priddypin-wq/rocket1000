@@ -1,16 +1,28 @@
 // Real no-login HTTP/session/ZIP test. Fixture telemetry is not an MT5 terminal.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { unzipSync, strFromU8 } from "fflate";
 import { market } from "../tests/helpers.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import { authenticator } from "../tests/webauthn-fixture.mjs";
 const root = process.cwd();
 await mkdir(join(root, "work"), { recursive: true });
 const directory = await mkdtemp(join(root, "work", "http-integration-"));
-const port = 3100;
-const base = `http://localhost:${port}`;
+// Use the same loopback address as the child. Windows may resolve localhost
+// to IPv6 first even though Next is bound to IPv4.
+const listener = createServer();
+await new Promise((resolve, reject) => {
+  listener.once("error", reject);
+  listener.listen(0, "127.0.0.1", resolve);
+});
+const { port } = listener.address();
+await new Promise((resolve, reject) =>
+  listener.close((error) => (error ? reject(error) : resolve())),
+);
+const base = `http://127.0.0.1:${port}`;
 Object.assign(process.env, {
   NODE_ENV: "development",
   ROCKET_DASHBOARD_URL: base,
@@ -30,6 +42,12 @@ process.env.ROCKET_OPENAI_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString(
   "base64",
 );
 process.env.ROCKET_ENGINE_CRON_SECRET = "";
+process.env.ROCKET_ALLOW_LEGACY_CLAIM = "1";
+process.env.ROCKET_ACCOUNT_SIGNUP_ENABLED = "1";
+process.env.ROCKET_ACCOUNTS_REQUIRED = "";
+process.env.ROCKET_SUBSCRIPTIONS_REQUIRED = "";
+process.env.PAYSTACK_SECRET_KEY = "";
+process.env.PAYSTACK_WEBHOOK_SECRET = "";
 const { getDatabase, migrateConnections } =
   await import("../server/database.mjs");
 const db = getDatabase();
@@ -89,6 +107,31 @@ async function initialize() {
   assert.ok(cookies[0].includes("SameSite=Strict"));
   return cookies.map((v) => v.split(";")[0]).join("; ");
 }
+async function authenticate(action, device, legacy) {
+  const route = `/api/account/${action}`;
+  const start = await request(route, {
+    cookie: legacy,
+    body: { action: "options" },
+  });
+  assert.equal(start.status, 200, await start.clone().text());
+  const { options } = await start.json();
+  const challenge = start.headers
+    .getSetCookie()
+    .map((value) => value.split(";")[0])
+    .join("; ");
+  const response =
+    action === "register" ? device.register(options) : device.login(options);
+  const result = await request(route, {
+    cookie: [legacy, challenge].filter(Boolean).join("; "),
+    body: { action: "verify", response },
+  });
+  assert.equal(result.status, 200, await result.clone().text());
+  const session = result.headers
+    .getSetCookie()
+    .find((value) => value.startsWith("rocket1000_account="));
+  assert.match(session, /HttpOnly; SameSite=Strict/);
+  return session.split(";")[0];
+}
 let checks = 0;
 const passed = (label) => {
   checks++;
@@ -96,18 +139,22 @@ const passed = (label) => {
 };
 try {
   let ready = false;
+  let startupIssue = "No response";
   for (let i = 0; i < 90; i++) {
     if (child.exitCode !== null) throw Error("Next dev exited");
     try {
-      const r = await fetch(base);
+      const r = await fetch(base, { signal: AbortSignal.timeout(15000) });
       if (r.ok) {
         ready = true;
         break;
       }
-    } catch {}
+      startupIssue = `HTTP ${r.status}`;
+    } catch (error) {
+      startupIssue = error.cause?.code || error.name;
+    }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  assert.ok(ready, "Server startup timed out");
+  assert.ok(ready, `Server startup timed out (${startupIssue})`);
   const page = await request("/mt5");
   assert.equal(page.status, 200);
   const html = await page.text();
@@ -864,7 +911,7 @@ try {
     (
       await request("/api/mt5/revoke", {
         cookie: alice,
-        body: { connectionId: id },
+        body: { connectionId: id, expectedInstallationId: token.split(".")[1] },
       })
     ).status,
     200,
@@ -1048,10 +1095,75 @@ try {
   );
   await request("/api/mt5/revoke", {
     cookie: alice,
-    body: { connectionId: id },
+    body: {
+      connectionId: id,
+      expectedInstallationId: singleFile.headers.get("X-Rocket-Installation"),
+    },
   });
+  const device = authenticator(base);
+  const desktop = await authenticate("register", device, alice);
+  const phone = await authenticate("login", device);
+  assert.notEqual(desktop, phone);
+  const claim = await request("/api/account/claim", {
+    cookie: `${desktop}; ${alice}`,
+    body: { confirm: true },
+  });
+  assert.equal(claim.status, 200, await claim.clone().text());
+  for (const session of [desktop, phone]) {
+    const connections = await request("/api/mt5/connections", {
+      cookie: session,
+    });
+    assert.equal(connections.status, 200, await connections.clone().text());
+    assert.match(connections.headers.get("cache-control"), /private, no-store/);
+    assert.equal((await connections.json()).connections[0].id, id);
+  }
+  assert.equal(
+    (await request("/api/mt5/connections", { cookie: alice })).status,
+    401,
+  );
+  passed(
+    "two authenticated device sessions share the original private MT5 workspace",
+  );
+  const unrelated = await authenticate("register", authenticator(base));
+  const separate = await request("/api/mt5/connections", { cookie: unrelated });
+  assert.notEqual((await separate.json()).connections[0].id, id);
+  assert.equal(
+    (await request("/api/account/owner", { cookie: unrelated })).status,
+    403,
+  );
+  assert.ok(
+    [403, 404].includes(
+      (
+        await request("/api/mt5/revoke", {
+          cookie: unrelated,
+          body: {
+            connectionId: id,
+            expectedInstallationId: singleFile.headers.get(
+              "X-Rocket-Installation",
+            ),
+          },
+        })
+      ).status,
+    ),
+  );
+  passed(
+    "a second account cannot revoke another installation or access the owner dashboard",
+  );
+  assert.equal(
+    (await request("/api/account/logout", { cookie: phone, body: {} })).status,
+    200,
+  );
+  assert.equal(
+    (await request("/api/mt5/connections", { cookie: phone })).status,
+    401,
+  );
+  assert.equal(
+    (await request("/api/mt5/connections", { cookie: desktop })).status,
+    200,
+  );
+  passed("sign-out invalidates only the requesting device session");
   console.log(
-    `${checks} no-login HTTP integration checks passed. The HTTPS host and terminal payload are fixtures, not an actual MT5 connection.`,
+    `${checks} HTTP integration checks passed using signed passkey and broker fixtures.`,
   );
 } catch (error) {
   console.error(output);

@@ -11,5 +11,5 @@ export const GET = (req: Request) =>
   );
 export const POST = (req: Request) =>
   dashboardRequest(req, async (_: unknown, uid: string) =>
-    analysisQueue(getDatabase()).start(uid),
+    analysisQueue(getDatabase()).start(uid, { analysisOnly: true }),
   );

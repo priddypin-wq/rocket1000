@@ -1,16 +1,20 @@
 import Database from "better-sqlite3";
 import pg from "pg";
 import { randomUUID } from "node:crypto";
+import { verifiedPostgresUrl } from "./postgres-tls.mjs";
 
 // One durable store for private browser sessions, EA credentials, and audit records.
 // SQLite is for a single local process. Vercel requires shared PostgreSQL.
 export function openDatabase({
   url,
   filename = "work/rocket1000.sqlite",
+  requireVerifiedTls = false,
 } = {}) {
   if (url) {
     const pool = new pg.Pool({
-      connectionString: url,
+      connectionString: verifiedPostgresUrl(url, {
+        required: requireVerifiedTls,
+      }),
       max: 5,
       idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 5000,
@@ -98,6 +102,8 @@ export function getDatabase() {
     store = openDatabase({
       url: process.env.DATABASE_URL,
       filename: process.env.SQLITE_PATH || "work/rocket1000.sqlite",
+      requireVerifiedTls:
+        !!process.env.VERCEL || process.env.ROCKET_REQUIRE_POSTGRES === "1",
     });
   }
   return store;
@@ -142,6 +148,7 @@ export async function migrateConnections(db) {
     `CREATE TABLE IF NOT EXISTS rocket_trade_commands (id TEXT PRIMARY KEY,preview_id TEXT NOT NULL UNIQUE,connection_id TEXT NOT NULL,installation_id TEXT NOT NULL,session_id TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL,lease_hash TEXT,created_at BIGINT NOT NULL,expires_at BIGINT NOT NULL,claimed_at BIGINT,result TEXT,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
     `CREATE INDEX IF NOT EXISTS rocket_trade_commands_idx ON rocket_trade_commands(connection_id,created_at)`,
     `CREATE TABLE IF NOT EXISTS rocket_trade_preferences (connection_id TEXT PRIMARY KEY,revision TEXT NOT NULL,payload TEXT NOT NULL,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
+    `CREATE TABLE IF NOT EXISTS rocket_protected_additions (connection_id TEXT PRIMARY KEY,account_login TEXT NOT NULL,broker_server TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled=1),FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE)`,
     `CREATE TABLE IF NOT EXISTS rocket_live_consents (user_id TEXT NOT NULL,account_key TEXT NOT NULL,account_login TEXT NOT NULL,broker_server TEXT NOT NULL,confirmed_at BIGINT NOT NULL,PRIMARY KEY(user_id,account_key),FOREIGN KEY(user_id) REFERENCES rocket_workspaces(id) ON DELETE CASCADE)`,
     `CREATE TABLE IF NOT EXISTS rocket_live_approvals (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,connection_id TEXT NOT NULL,installation_id TEXT NOT NULL,session_id TEXT NOT NULL,account_key TEXT NOT NULL,settings_revision TEXT NOT NULL,engine_version TEXT NOT NULL,created_at BIGINT NOT NULL,expires_at BIGINT NOT NULL,used_at BIGINT,payload TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES rocket_workspaces(id) ON DELETE CASCADE,FOREIGN KEY(connection_id) REFERENCES rocket_direct_connections(id) ON DELETE CASCADE,FOREIGN KEY(installation_id) REFERENCES rocket_direct_installations(id) ON DELETE CASCADE)`,
     `CREATE INDEX IF NOT EXISTS rocket_live_approvals_idx ON rocket_live_approvals(user_id,account_key,engine_version,used_at)`,
@@ -154,6 +161,18 @@ export async function migrateConnections(db) {
     `CREATE TABLE IF NOT EXISTS rocket_ai_connection_budget (id TEXT PRIMARY KEY,hour_bucket BIGINT NOT NULL,hour_hits INTEGER NOT NULL,day_bucket BIGINT NOT NULL,day_hits INTEGER NOT NULL,lease_id TEXT,lease_until BIGINT NOT NULL DEFAULT 0)`,
   ];
   for (const sql of statements) await db.query(sql);
+  if (db.kind === "postgres") {
+    await db.query(
+      "ALTER TABLE rocket_analyses ADD COLUMN IF NOT EXISTS account_key TEXT",
+    );
+  } else {
+    const columns = await db.query("PRAGMA table_info(rocket_analyses)");
+    if (!columns.some((column) => column.name === "account_key"))
+      await db.query("ALTER TABLE rocket_analyses ADD COLUMN account_key TEXT");
+  }
+  await db.query(
+    "CREATE INDEX IF NOT EXISTS rocket_analysis_account_idx ON rocket_analyses(connection_id,account_key,installation_id,created_at)",
+  );
   const [
     { openaiCredentialSchema },
     { analysisEngineSchema },
@@ -162,6 +181,9 @@ export async function migrateConnections(db) {
     { eaCredentialSchema },
     { engineActivationSchema },
     { eaConnectionBindingSchema },
+    { eaInstallationActionsSchema },
+    { accountSchema },
+    { billingSchema },
   ] = await Promise.all([
     import("./openai-credentials.mjs"),
     import("./engine-service.mjs"),
@@ -170,6 +192,9 @@ export async function migrateConnections(db) {
     import("./ea-credential-vault.mjs"),
     import("./engine-activation.mjs"),
     import("./ea-connection-binding.mjs"),
+    import("./ea-installation-actions.mjs"),
+    import("./account-auth.mjs"),
+    import("./billing.mjs"),
   ]);
   for (const sql of [
     ...openaiCredentialSchema,
@@ -179,6 +204,9 @@ export async function migrateConnections(db) {
     ...eaCredentialSchema,
     ...engineActivationSchema,
     ...eaConnectionBindingSchema,
+    ...eaInstallationActionsSchema,
+    ...accountSchema,
+    ...billingSchema,
   ])
     await db.query(sql);
   await db.query(

@@ -17,6 +17,7 @@ const VERSION = 1;
 // Browser credential storage is a legacy operator opt-in. The default deployment
 // accepts its paid OpenAI credential and model only from server configuration.
 export const openaiServerManaged = (env = process.env) =>
+  env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1" ||
   env.ROCKET_OPENAI_SERVER_MANAGED !== "0";
 export function assertOpenaiCredentialWritable(env = process.env) {
   if (openaiServerManaged(env))
@@ -194,6 +195,10 @@ export function openaiCredentialService(
     return {
       ...env,
       OPENAI_API_KEY: key,
+      // A customer-managed key belongs to its own provider project. Never
+      // apply the deployment owner's routing headers to that credential.
+      OPENAI_ORG_ID: !serverManaged && row ? "" : env.OPENAI_ORG_ID,
+      OPENAI_PROJECT_ID: !serverManaged && row ? "" : env.OPENAI_PROJECT_ID,
       OPENAI_MODEL: serverManaged
         ? configuredModel(env)
         : row?.model || configuredModel(env),

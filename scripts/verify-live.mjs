@@ -13,6 +13,7 @@ const passed = (label) => {
 };
 let cookie = "",
   connectionId = "",
+  installationId = "",
   issued = false;
 
 async function request(
@@ -107,6 +108,7 @@ try {
   if (download.status !== 200)
     throw new Error(`EA download returned HTTP ${download.status}.`);
   issued = true;
+  installationId = download.headers.get("X-Rocket-Installation") || "";
   assert.ok(
     download.headers.get("content-type")?.includes("application/zip"),
     "EA download is not a ZIP",
@@ -133,6 +135,7 @@ try {
         return [line.slice(0, i), line.slice(i + 1)];
       }),
   );
+  installationId ||= config.installation_id;
   // Boolean checks avoid including credentials in an assertion's diagnostic output.
   assert.ok(config.backend_url === origin, "Bundled backend URL is incorrect");
   assert.ok(
@@ -227,7 +230,7 @@ try {
       await json(
         await request("/api/mt5/revoke", {
           method: "POST",
-          body: { connectionId },
+          body: { connectionId, expectedInstallationId: installationId },
           privateSession: true,
         }),
       );

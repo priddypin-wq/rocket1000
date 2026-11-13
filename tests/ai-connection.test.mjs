@@ -82,6 +82,28 @@ test("AI connection GET is private, free, unconfigured or configured without imp
   }
 });
 
+test("an exhausted credit error persists a safe diagnostic without marking the provider connected", async () => {
+  const f = await fixture({
+    responder: async () => {
+      throw new ApiError(503, "private detail", "AI_CREDITS_EXHAUSTED");
+    },
+  });
+  try {
+    const result = await f.service.test("alice");
+    assert.equal(result.connected, false);
+    assert.equal(result.errorCode, "AI_CREDITS_EXHAUSTED");
+    assert.equal(
+      (await f.service.status("alice")).errorCode,
+      "AI_CREDITS_EXHAUSTED",
+    );
+    assert.match(result.error, /prepaid credits/);
+    assert.doesNotMatch(JSON.stringify(result), /private detail/);
+    assert.equal(f.calls(), 1);
+  } finally {
+    await f.db.close();
+  }
+});
+
 test("a genuine successful diagnostic shows Connected only for this workspace and credential", async () => {
   const f = await fixture();
   try {

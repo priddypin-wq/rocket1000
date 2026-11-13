@@ -2,11 +2,35 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "./errors.mjs";
 import { createAiResponse, configuredModel } from "./ai-provider.mjs";
 import { disableTrading } from "./trading.mjs";
+import { billingEntitlement } from "./billing.mjs";
 
 export const aiUsageSchema = [
   `CREATE TABLE IF NOT EXISTS rocket_ai_usage (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,day_bucket BIGINT NOT NULL,kind TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL,reserved_microusd BIGINT NOT NULL,charged_microusd BIGINT NOT NULL DEFAULT 0,input_tokens BIGINT NOT NULL DEFAULT 0,output_tokens BIGINT NOT NULL DEFAULT 0,created_at BIGINT NOT NULL,settled_at BIGINT,FOREIGN KEY(user_id) REFERENCES rocket_workspaces(id) ON DELETE CASCADE)`,
   `CREATE INDEX IF NOT EXISTS rocket_ai_usage_day_idx ON rocket_ai_usage(user_id,day_bucket)`,
+  `CREATE INDEX IF NOT EXISTS rocket_ai_usage_platform_day_idx ON rocket_ai_usage(day_bucket)`,
 ];
+export const billingPauseCodes = new Set([
+  "SUBSCRIPTION_REQUIRED",
+  "AI_SUBSCRIPTION_ALLOWANCE_REACHED",
+  "AI_PLATFORM_BUDGET_REACHED",
+  "AI_PLATFORM_BUDGET_REQUIRED",
+]);
+const usageCost = `COALESCE(SUM(charged_microusd),0)+COALESCE(SUM(CASE WHEN status='reserved' THEN reserved_microusd ELSE 0 END),0) AS cost`;
+function platformDailyBudget(env) {
+  const amount = Number(env.ROCKET_AI_PLATFORM_DAILY_BUDGET_USD);
+  if (Number.isFinite(amount) && amount >= 0.1 && amount <= 10000)
+    return Math.floor(amount * 1e6);
+  if (
+    env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1" ||
+    env.ROCKET_AI_PLATFORM_DAILY_BUDGET_USD !== undefined
+  )
+    throw new ApiError(
+      503,
+      "The operator must configure a valid platform AI budget.",
+      "AI_PLATFORM_BUDGET_REQUIRED",
+    );
+  return null;
+}
 // Standard non-cached text rates, USD per million tokens; reviewed 2026-10-22.
 // Unknown models need explicit operator rates; they never inherit another price.
 const prices = {
@@ -129,10 +153,33 @@ export function usageService(
     const amount = Math.ceil(inputBound * rates[0] + outputBound * rates[1]);
     const id = randomUUID();
     await db.transaction(async (tx) => {
-      await tx.query(
-        `SELECT id FROM rocket_workspaces WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
-        [uid],
+      const [workspace] = await tx.query(
+        `SELECT id FROM rocket_workspaces WHERE id=? AND expires_at>?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+        [uid, now()],
       );
+      if (!workspace)
+        throw new ApiError(401, "The private workspace is unavailable.");
+      await checkEntitlement(uid, tx, amount);
+      const day = Math.floor(now() / 86400000);
+      const platformLimit = platformDailyBudget(env);
+      if (platformLimit !== null) {
+        await tx.query(
+          "INSERT INTO rocket_server_meta(name,value) VALUES('ai_platform_budget_lock','1') ON CONFLICT(name) DO NOTHING",
+        );
+        await tx.query(
+          `SELECT name FROM rocket_server_meta WHERE name='ai_platform_budget_lock'${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+        );
+        const [platform] = await tx.query(
+          `SELECT ${usageCost} FROM rocket_ai_usage WHERE day_bucket=?`,
+          [day],
+        );
+        if (Number(platform.cost) + amount > platformLimit)
+          throw new ApiError(
+            429,
+            "The platform AI budget has been reached for this UTC day.",
+            "AI_PLATFORM_BUDGET_REACHED",
+          );
+      }
       const spent = await totals(uid, tx);
       if (
         Math.round((spent.estimatedUsd + spent.reservedUsd) * 1e6) + amount >
@@ -145,19 +192,32 @@ export function usageService(
         );
       await tx.query(
         "INSERT INTO rocket_ai_usage(id,user_id,day_bucket,kind,model,status,reserved_microusd,created_at) VALUES(?,?,?,?,?,?,?,?)",
-        [
-          id,
-          uid,
-          Math.floor(now() / 86400000),
-          kind,
-          model,
-          "reserved",
-          amount,
-          now(),
-        ],
+        [id, uid, day, kind, model, "reserved", amount, now()],
       );
     });
     return { id, amount, rates, inputBound, outputBound };
+  }
+  async function checkEntitlement(uid, tx = db, amount = 1) {
+    const access = await billingEntitlement(tx, uid, { env, now });
+    if (!access.allowed)
+      throw new ApiError(
+        402,
+        access.reason ||
+          "An active subscription is required for paid AI analysis.",
+        "SUBSCRIPTION_REQUIRED",
+      );
+    if (access.allowanceMicrousd != null) {
+      const [period] = await tx.query(
+        `SELECT ${usageCost} FROM rocket_ai_usage WHERE user_id=? AND created_at>=?`,
+        [uid, access.periodStart],
+      );
+      if (Number(period.cost) + amount > access.allowanceMicrousd)
+        throw new ApiError(
+          429,
+          "The AI allowance for this subscription period is exhausted.",
+          "AI_SUBSCRIPTION_ALLOWANCE_REACHED",
+        );
+    }
   }
   async function settle(reservation, usage) {
     const input = usage?.input_tokens,
@@ -197,19 +257,19 @@ export function usageService(
       try {
         r = await reserve(uid, payload, requestEnv, kind);
       } catch (error) {
-        await suspend(uid, error, generation);
+        if (!billingPauseCodes.has(error?.code))
+          await suspend(uid, error, generation);
         throw error;
       }
-      if (beforeDispatch) {
-        try {
-          await db.transaction(beforeDispatch);
-        } catch (error) {
-          await db.query(
-            "UPDATE rocket_ai_usage SET status='cancelled',settled_at=? WHERE id=? AND status='reserved'",
-            [now(), r.id],
-          );
-          throw error;
-        }
+      try {
+        if (beforeDispatch) await db.transaction(beforeDispatch);
+        await checkEntitlement(uid, db, 0);
+      } catch (error) {
+        await db.query(
+          "UPDATE rocket_ai_usage SET status='cancelled',settled_at=? WHERE id=? AND status='reserved'",
+          [now(), r.id],
+        );
+        throw error;
       }
       let result;
       try {
@@ -234,5 +294,5 @@ export function usageService(
       return result;
     };
   }
-  return { totals, reserve, settle, responder };
+  return { totals, reserve, settle, responder, checkEntitlement };
 }

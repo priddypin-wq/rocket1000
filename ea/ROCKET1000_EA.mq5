@@ -371,6 +371,39 @@ void RefreshRisk() {
 bool TradeAllowed() {
    return TerminalInfoInteger(TERMINAL_CONNECTED) && TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED) && AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) && AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
 }
+string TradePermissionsSnapshot() {
+   return "{\"terminalAlgoTrading\":"+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false")
+      +",\"eaAlgoTrading\":"+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false")
+      +",\"accountTrading\":"+(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)?"true":"false")
+      +",\"accountExpertTrading\":"+(AccountInfoInteger(ACCOUNT_TRADE_EXPERT)?"true":"false")+"}";
+}
+string BrokerSpecificationSnapshot() {
+   string sessions="[";int count=0;bool complete=true;
+   for(int day=0;day<7;day++) {
+      for(uint slot=0;slot<33;slot++) {
+         datetime start=0,end=0;
+         if(!SymbolInfoSessionTrade(_Symbol,(ENUM_DAY_OF_WEEK)day,slot,start,end))break;
+         if(slot==32){complete=false;break;}
+         if(count++>0)sessions+=",";
+         sessions+="["+IntegerToString(day)+","+IntegerToString((long)start%86400)+","+IntegerToString((long)end%86400)+","+((long)end-(long)start>=86400?"true":"false")+"]";
+      }
+   }
+   sessions+="]";
+   long swap_mode=0;double swap_long=0,swap_short=0;
+   bool swap_ok=SymbolInfoInteger(_Symbol,SYMBOL_SWAP_MODE,swap_mode)
+      && SymbolInfoDouble(_Symbol,SYMBOL_SWAP_LONG,swap_long)
+      && SymbolInfoDouble(_Symbol,SYMBOL_SWAP_SHORT,swap_short)
+      && MathIsValidNumber(swap_long) && MathIsValidNumber(swap_short);
+   string swaps=swap_ok?("{\"mode\":"+IntegerToString(swap_mode)+",\"long\":"+DoubleToString(swap_long,8)+",\"short\":"+DoubleToString(swap_short,8)+"}"):"null";
+   string buy="null",sell="null";MqlTick quote;double margin=0;
+   double minimum=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   if(minimum>0 && FreshQuote(_Symbol,quote,3)) {
+      if(OrderCalcMargin(ORDER_TYPE_BUY,_Symbol,minimum,quote.ask,margin) && MathIsValidNumber(margin) && margin>=0)buy=DoubleToString(margin,8);
+      if(OrderCalcMargin(ORDER_TYPE_SELL,_Symbol,minimum,quote.bid,margin) && MathIsValidNumber(margin) && margin>=0)sell=DoubleToString(margin,8);
+   }
+   return "{\"symbol\":\""+EscapeJson(_Symbol)+"\",\"sessions\":"+(complete && count>0?sessions:"null")
+      +",\"swap\":"+swaps+",\"minimumBuyMargin\":"+buy+",\"minimumSellMargin\":"+sell+"}";
+}
 bool TradingSessionOpen(string symbol){
    MqlDateTime now;if(!TimeToStruct(BrokerNow(),now))return false;
    int seconds=now.hour*3600+now.min*60+now.sec;
@@ -518,12 +551,15 @@ string TelemetryBody() {
    string account_type=(mode==ACCOUNT_TRADE_MODE_DEMO?"demo":"live");
    bool broker_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    string json="{\"accountLogin\":\""+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"brokerServer\":\""+EscapeJson(AccountInfoString(ACCOUNT_SERVER))+"\",\"accountType\":\""+account_type+"\",\"accountTradeMode\":"+IntegerToString((long)mode)+",\"chartSymbol\":\""+EscapeJson(_Symbol)+"\",\"authorizedSymbols\":[\""+EscapeJson(_Symbol)+"\"],\"instanceId\":\""+ea_instance+"\",\"eaVersion\":\"7.00\",\"terminalBuild\":"+IntegerToString(TerminalInfoInteger(TERMINAL_BUILD))+",\"brokerConnected\":"+(broker_connected?"true":"false")+"}";
+   if(!broker_connected)
+      return StringSubstr(json,0,StringLen(json)-1)+",\"eaProtocol\":4,\"terminalSession\":\""+terminal_session+"\",\"execution\":{\"terminalId\":\""+terminal_id+"\"}}";
    // Position/account synchronization must continue when chart candles or quotes are unavailable.
    positions_snapshot=PositionsSnapshot(positions_available);
    broker_pending_snapshot=PendingOrdersSnapshot(broker_pending_available);
    string market=MarketSnapshot();
    if(market!="")json=StringSubstr(json,0,StringLen(json)-1)+",\"market\":"+market+"}";
-   string execution=ExecutionSnapshot();execution=StringSubstr(execution,0,StringLen(execution)-1)+",\"terminalId\":\""+terminal_id+"\",\"realizedToday\":"+DoubleToString(realized_today,2)+",\"freezeLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL))+"}";
+   else json=StringSubstr(json,0,StringLen(json)-1)+",\"marketUnavailable\":true}";
+   string execution=ExecutionSnapshot();execution=StringSubstr(execution,0,StringLen(execution)-1)+",\"terminalId\":\""+terminal_id+"\",\"realizedToday\":"+DoubleToString(realized_today,2)+",\"freezeLevel\":"+IntegerToString(SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL))+",\"protectedAdditions\":true,\"finalPartialReconciliation\":true,\"tradePermissions\":"+TradePermissionsSnapshot()+",\"brokerSpecification\":"+BrokerSpecificationSnapshot()+"}";
    json=StringSubstr(json,0,StringLen(json)-1)+",\"eaProtocol\":4,\"terminalSession\":\""+terminal_session+"\",\"execution\":"+execution+(pending_result!=""?",\"orderResult\":"+pending_result:"")+"}";
    return json;
 }
@@ -541,9 +577,9 @@ int Post(string path,string json,string &body) {
       else ShowStatus("Disconnected - HTTPS/network error "+IntegerToString(error));
       return -1;
    }
+   body=CharArrayToString(result,0,WHOLE_ARRAY,CP_UTF8);
    // A 200 HTML login page or proxy response is never a successful registration.
    if(code==200) {
-      body=CharArrayToString(result,0,WHOLE_ARRAY,CP_UTF8);
       if(StringFind(body,"\"ok\":true")<0 || StringFind(body,"\"installationId\":\""+installation_id+"\"")<0) return 502;
       double server_time=StringToDouble(JsonValue(body,"serverTime",false));
       if(server_time<1577836800000.0 || server_time>4102444800000.0)return 502;
@@ -582,7 +618,18 @@ bool SetFilling(MqlTradeRequest &request){
    else return false;
    return true;
 }
-bool SafeOrder(string body,MqlTradeRequest &request){
+bool ProtectedAddition(string symbol,bool buy,const MqlTick &quote,double adverse_slippage){
+   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING || PositionsTotal()!=1 || !costs_verified)return false;
+   ulong ticket=PositionGetTicket(0);
+   if(ticket==0 || !PositionSelectByTicket(ticket) || !PositionIntegrity() || PositionGetString(POSITION_SYMBOL)!=symbol || (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)!=buy)return false;
+   double open=PositionGetDouble(POSITION_PRICE_OPEN),stop=PositionGetDouble(POSITION_SL),volume=PositionGetDouble(POSITION_VOLUME),net_stop=0;
+   if(open<=0 || stop<=0 || volume<=0 || PositionGetDouble(POSITION_PROFIT)<=0 || (buy?quote.bid<=stop:quote.ask>=stop))return false;
+   double worst_stop=stop+(buy?-adverse_slippage:adverse_slippage);
+   if(worst_stop<=0 || !OrderCalcProfit(buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL,symbol,volume,open,worst_stop,net_stop))return false;
+   return MathIsValidNumber(net_stop) && net_stop>=commission_per_lot*volume+MathMax(0,-PositionGetDouble(POSITION_SWAP)) && PositionsTotal()==1;
+}
+bool SafeOrder(string body,MqlTradeRequest &request,uint &preflight_code){
+   preflight_code=0;
    if(!registered || !order_permission || clock_anchor<=0 || !TradeAllowed() || !SameAccount(body))return false;
    if(JsonValue(body,"engineVersion",true)!="rocket-ai-7")return false;
    double expiry=StringToDouble(JsonValue(body,"expiresAt",false));
@@ -595,7 +642,8 @@ bool SafeOrder(string body,MqlTradeRequest &request){
    double risk_pct=StringToDouble(JsonValue(body,"riskPerTradePct",false)),daily_pct=StringToDouble(JsonValue(body,"maxDailyLossPct",false)),drawdown_pct=StringToDouble(JsonValue(body,"maxDrawdownPct",false)),position_limit=StringToDouble(JsonValue(body,"maxPositions",false));
    double numeric_values[]={volume,stop,tp,review,spread_cap,slippage_cap,risk_pct,daily_pct,drawdown_pct,position_limit};
    for(int n=0;n<ArraySize(numeric_values);n++)if(!MathIsValidNumber(numeric_values[n]))return false;
-   if(volume<=0 || review<=0 || spread_cap<1 || spread_cap>1000 || slippage_cap<1 || slippage_cap>1000 || risk_pct<=0 || risk_pct>0.25 || daily_pct<=0 || daily_pct>1 || drawdown_pct<=0 || drawdown_pct>5 || position_limit!=1)return false;
+   bool adding=kind=="OPEN" && JsonValue(body,"entryAction",true)=="ADD";
+   if(volume<=0 || review<=0 || spread_cap<1 || spread_cap>1000 || slippage_cap<1 || slippage_cap>1000 || risk_pct<=0 || risk_pct>0.25 || daily_pct<=0 || daily_pct>1 || drawdown_pct<=0 || drawdown_pct>5 || position_limit!=(adding?2:1))return false;
    MqlTick quote;if(!FreshQuote(symbol,quote,3))return false;
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP),tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE),point=SymbolInfoDouble(symbol,SYMBOL_POINT);
    if(point<=0 || !SymbolExecutionAllowed(symbol,kind=="OPEN"))return false;
@@ -633,8 +681,7 @@ bool SafeOrder(string body,MqlTradeRequest &request){
       RefreshRisk();
       if(!FreshQuote(symbol,quote,3))return false;
       if(!risk_stops || !news_verified || news_blocked || !loss_history_verified || consecutive_losses>=3 || PositionsTotal()>=(int)position_limit || OrdersTotal()>0 || !costs_verified)return false;
-      // One account position during initial testing: no grid, baskets, additions or averaging down.
-      if(PositionsTotal()!=0)return false;
+      if(adding ? (AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !ProtectedAddition(symbol,side=="BUY",quote,slippage_cap*point)) : PositionsTotal()!=0)return false;
       double aggregate_pct=StringToDouble(JsonValue(body,"aggregateRiskPct",false)),min_rr=StringToDouble(JsonValue(body,"minRewardRisk",false));
       if(aggregate_pct<=0 || aggregate_pct>0.25 || (min_rr<1.5 || min_rr>10))return false;
       double balance=AccountInfoDouble(ACCOUNT_BALANCE),equity=AccountInfoDouble(ACCOUNT_EQUITY),free_margin=AccountInfoDouble(ACCOUNT_MARGIN_FREE),capital=MathMin(balance,equity),entry=side=="BUY"?quote.ask:quote.bid;
@@ -658,7 +705,7 @@ bool SafeOrder(string body,MqlTradeRequest &request){
       if(!SetFilling(request))return false;
    }
    MqlTradeCheckResult checked={};
-   if(!OrderCheck(request,checked) || checked.retcode!=0 || !MathIsValidNumber(checked.margin_free) || checked.margin_free<0)return false;
+   if(!OrderCheck(request,checked) || checked.retcode!=0 || !MathIsValidNumber(checked.margin_free) || checked.margin_free<0){preflight_code=checked.retcode;return false;}
    return true;
 }
 void ExecuteBrokerCommand(string body){
@@ -666,12 +713,12 @@ void ExecuteBrokerCommand(string body){
    if(StringLen(id)!=36 || StringLen(lease)!=43 || !SameAccount(body))return;
    string guard="R1000.sent."+id;
    if(GlobalVariableCheck(guard)){BrokerResult(id,lease,"uncertain",0);return;}
-   MqlTradeRequest request={};
-   if(!SafeOrder(body,request)){BrokerResult(id,lease,"failed",0);return;}
+   MqlTradeRequest request={};uint preflight_code=0;
+   if(!SafeOrder(body,request,preflight_code)){BrokerResult(id,lease,"failed",preflight_code);return;}
    string json=TelemetryBody(),authorized="";
    json=StringSubstr(json,0,StringLen(json)-1)+",\"authorization\":{\"id\":\""+id+"\",\"lease\":\""+lease+"\"}}";
    if(Post("/api/ea/authorize",json,authorized)!=200 || JsonValue(authorized,"command",true)!="AUTHORIZED" || JsonValue(authorized,"orderId",true)!=id || JsonValue(authorized,"lease",true)!=lease){BrokerResult(id,lease,"failed",0);return;}
-   if(!SafeOrder(authorized,request)){BrokerResult(id,lease,"failed",0);return;}
+   if(!SafeOrder(authorized,request,preflight_code)){BrokerResult(id,lease,"failed",preflight_code);return;}
    ResetLastError();if(GlobalVariableSet(guard,ServerNow())==0 || GetLastError()!=0){BrokerResult(id,lease,"failed",0);return;}
    ResetLastError();GlobalVariablesFlush();if(GetLastError()!=0){BrokerResult(id,lease,"failed",0);return;}
    if(!SameAccount(authorized) || (request.position>0 && (!PositionSelectByTicket(request.position) || !PositionIntegrity() || TicketString((ulong)PositionGetInteger(POSITION_IDENTIFIER))!=JsonValue(authorized,"positionIdentifier",true) || MathAbs(PositionGetDouble(POSITION_VOLUME)-StringToDouble(JsonValue(authorized,"positionVolume",false)))>0.00000001))){BrokerResult(id,lease,"failed",0);return;}
@@ -688,7 +735,7 @@ void ExecuteBrokerCommand(string body){
 }
 void ReconcileBrokerCommand(string body){
    string id=JsonValue(body,"orderId",true),lease=JsonValue(body,"lease",true),kind=JsonValue(body,"kind",true),symbol=JsonValue(body,"symbol",true);
-   if(StringLen(id)!=36 || StringLen(lease)!=43 || !SameAccount(body) || (kind=="OPEN" && symbol!=_Symbol))return;
+   if(StringLen(id)!=36 || StringLen(lease)!=43 || !SameAccount(body) || symbol=="" || (kind!="OPEN" && kind!="CLOSE" && kind!="MODIFY"))return;
    string tag="R1000:"+StringSubstr(id,0,24);
    if(kind=="MODIFY"){
       ulong position=TicketValue(JsonValue(body,"position",true));double tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
@@ -704,18 +751,30 @@ void ReconcileBrokerCommand(string body){
          if((kind=="OPEN" && entry!=DEAL_ENTRY_IN) || (kind=="CLOSE" && (entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)))continue;
          if(kind=="CLOSE" && TicketString((ulong)HistoryDealGetInteger(candidate,DEAL_POSITION_ID))!=JsonValue(body,"positionIdentifier",true))continue;
          if(HistoryDealGetString(candidate,DEAL_COMMENT)!=tag && HistoryOrderGetString(candidate_order,ORDER_COMMENT)!=tag)continue;
-         double filled=HistoryDealGetDouble(candidate,DEAL_VOLUME);volume+=filled;value+=filled*HistoryDealGetDouble(candidate,DEAL_PRICE);deal=candidate;order=candidate_order;
+         if(order!=0 && order!=candidate_order){BrokerResult(id,lease,"uncertain",0);return;}
+         double filled=HistoryDealGetDouble(candidate,DEAL_VOLUME),price=HistoryDealGetDouble(candidate,DEAL_PRICE);
+         if(!MathIsValidNumber(filled) || !MathIsValidNumber(price) || filled<=0 || price<=0){BrokerResult(id,lease,"uncertain",0);return;}
+         volume+=filled;value+=filled*price;deal=candidate;order=candidate_order;
       }
       bool pending=false;for(int n=0;n<OrdersTotal();n++){ulong ticket=OrderGetTicket(n);if(ticket>0 && OrderGetInteger(ORDER_MAGIC)==100061 && OrderGetString(ORDER_COMMENT)==tag)pending=true;}
-      if(volume>0 && !pending){bool partial=volume+0.00000001<StringToDouble(JsonValue(body,"volume",false));BrokerResult(id,lease,partial?"partial":"executed",0,deal,order,volume,value/volume,"broker-history");return;}
+      double requested=StringToDouble(JsonValue(body,"volume",false)),epsilon=MathMax(0.00000001,requested*0.00000001);
+      if(volume>0 && requested>0 && volume<=requested+epsilon && !pending){
+         bool partial=volume+epsilon<requested;
+         long state=0;double initial=0,remaining=0;
+         bool ended=HistoryOrderGetInteger(order,ORDER_STATE,state) && (state==ORDER_STATE_CANCELED || state==ORDER_STATE_EXPIRED || state==ORDER_STATE_FILLED)
+            && HistoryOrderGetDouble(order,ORDER_VOLUME_INITIAL,initial) && HistoryOrderGetDouble(order,ORDER_VOLUME_CURRENT,remaining)
+            && MathAbs(initial-requested)<=epsilon && MathAbs(initial-remaining-volume)<=epsilon;
+         if(!partial || ended){BrokerResult(id,lease,partial?"partial":"executed",0,deal,order,volume,value/volume,"broker-history");return;}
+      }
    }
    // Missing local guard on the SAME persistent terminal proves OrderSend was never reached.
    double age=ServerNow()-StringToDouble(JsonValue(body,"createdAt",false));
    if(age>=0 && age<7*86400000.0 && JsonValue(body,"originTerminal",true)==terminal_id && !GlobalVariableCheck("R1000.sent."+id)){BrokerResult(id,lease,"failed",0);return;}
    BrokerResult(id,lease,"uncertain",0);
 }
-int SendTelemetry(bool registration){
+int SendTelemetry(bool registration,string &error_code){
    string body="";int code=Post(registration?"/api/ea/register":"/api/ea/heartbeat",TelemetryBody(),body);
+   error_code=code==200?"":JsonValue(body,"code",true);
    if(code==200){pending_result="";active_id="";order_permission=StringFind(body,"\"tradingEnabled\":true")>=0;registered=true;string command=JsonValue(body,"command",true);if(command=="TRADE")ExecuteBrokerCommand(body);else if(command=="RECONCILE")ReconcileBrokerCommand(body);}
    else order_permission=false;
    return code;
@@ -739,8 +798,17 @@ void OnTimer() {
    if(account_stamp!=AccountStamp()){account_stamp=AccountStamp();registered=false;order_permission=false;terminal_session=NewSession();pending_result="";active_id="";broker_anchor=0;quote_count=0;costs_until=0;performance_until=0;}
    if(!LoadConfig()) {registered=false;order_permission=false;ShowStatus("Disconnected - download the personalized EA again");next_attempt=tick+15000;return;}
    if(!TerminalInfoInteger(TERMINAL_CONNECTED) || AccountInfoInteger(ACCOUNT_LOGIN)<=0) {
-      if(registered)terminal_session=NewSession();order_permission=false;
-      registered=false;ShowStatus("Disconnected - log into the authorized MT5 broker account");next_attempt=tick+5000;return;
+      order_permission=false;
+      if(registered) {
+         // Notify the backend once on the existing session if identity is
+         // still available. No trading command can run from this response.
+         if(AccountInfoInteger(ACCOUNT_LOGIN)>0 && AccountInfoString(ACCOUNT_SERVER)!="") {
+            string body="";
+            Post("/api/ea/heartbeat",TelemetryBody(),body);
+         }
+         terminal_session=NewSession();
+      }
+      registered=false;ShowStatus("Disconnected - log into the authorized MT5 broker account");next_attempt=GetTickCount64()+5000;return;
    }
    // Account validation is local. Never report it as an HTTP response from the backend.
    long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
@@ -748,11 +816,14 @@ void OnTimer() {
       registered=false;ShowStatus("Connection Error - use a demo or live MT5 account");next_attempt=tick+5000;return;
    }
    if(!registered) ShowStatus("Connecting");
-   int code=SendTelemetry(!registered);
+   string error_code="";
+   int code=SendTelemetry(!registered,error_code);
    if(code==200) { registered=true;retry_seconds=5;next_attempt=GetTickCount64()+5000;ShowStatus("Connected");return; }
    if(registered)terminal_session=NewSession();registered=false;order_permission=false;
    if(code==401) ShowStatus("Authentication Failed - download a replacement package");
    else if(code==403) ShowStatus("Account Mismatch - check the authorized MT5 account and server");
+   else if(error_code=="EA_CONNECTION_IN_USE") ShowStatus("Connection in use - reconnect the original terminal or remove the EA from the other active chart");
+   else if(error_code=="BROKER_DISCONNECTED") ShowStatus("Disconnected - broker login or connection is unavailable");
    else if(code!=-1 && code!=-2) ShowStatus("Disconnected - backend HTTP "+IntegerToString(code));
    next_attempt=GetTickCount64()+(ulong)retry_seconds*1000;
    retry_seconds=MathMin(retry_seconds*2,60);
@@ -786,6 +857,9 @@ void OnTradeTransaction(const MqlTradeTransaction &transaction,const MqlTradeReq
    active_deals[active_deal_count++]=transaction.deal;active_filled+=volume;active_value+=volume*price;
    double epsilon=MathMax(0.00000001,active_volume*0.00000001);
    if(active_filled>active_volume+epsilon)return;
-   BrokerResult(active_id,active_lease,active_filled+epsilon<active_volume?"partial":"executed",0,transaction.deal,order,active_filled,active_value/active_filled,"broker-history");
+   // A partial fill can still have a working remainder. Resolve it only once
+   // broker history and the final order state confirm the remaining volume.
+   if(active_filled+epsilon>=active_volume)
+      BrokerResult(active_id,active_lease,"executed",0,transaction.deal,order,active_filled,active_value/active_filled,"broker-history");
 }
 

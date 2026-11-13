@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   analyzeMarket,
   aiConfiguration,
@@ -13,6 +14,7 @@ import {
 } from "../server/market.mjs";
 import { ApiError } from "../server/errors.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import { accountKey } from "../server/trade-settings.mjs";
 import { NOW, terminal, market, fixture, decision } from "./helpers.mjs";
 const response = (overrides = {}) => ({
   id: "resp_test",
@@ -464,6 +466,106 @@ test("provider failure is persisted without exposing raw provider details", asyn
     assert.equal(state.latest.status, "error");
     assert.equal(state.latest.result, null);
     assert.equal(state.latest.error, "AI authentication was rejected.");
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("account switches preserve historical analysis but never reuse an old signal", async () => {
+  const f = await fixture();
+  const original = { ...terminal, accountType: "demo" };
+  const next = { ...terminal, accountLogin: "87654321" };
+  const send = (identity, session) =>
+    f.service.telemetry(
+      f.token,
+      {
+        ...identity,
+        eaProtocol: 4,
+        terminalSession: session,
+        execution: {
+          terminalId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+          engineVersion: ENGINE_VERSION,
+          tickSize: 0.01,
+          tickValue: 1,
+          point: 0.01,
+          volumeStep: 0.01,
+          minVolume: 0.01,
+          maxVolume: 10,
+          stopLevel: 10,
+          dayStartEquity: 18432.81,
+          dailyLoss: 0,
+          peakEquity: 18432.81,
+          existingRisk: 0,
+          freeMargin: 18000,
+          pendingOrders: 0,
+          tradeAllowed: false,
+          stopsVerified: true,
+          newsVerified: true,
+          newsBlocked: false,
+        },
+        market: market(f.now()),
+      },
+      true,
+    );
+  try {
+    await send(original, "111111111111111111111111");
+    const service = analysisService(f.db, {
+      now: f.now,
+      analyzer: async (snapshot) => assessment(snapshot, f.now()),
+    });
+    const completed = await service.start("alice");
+    const prior = await service.status("alice");
+    assert.equal(prior.latest.id, completed.id);
+    const key = accountKey(
+      original.accountLogin,
+      original.brokerServer,
+      original.accountType,
+    );
+    const legacy = randomUUID();
+    const inFlight = randomUUID();
+    await f.db.query(
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      [
+        legacy,
+        f.id,
+        f.token.split(".")[1],
+        "completed",
+        f.now() + 1,
+        JSON.stringify(completed),
+      ],
+    );
+    assert.deepEqual(
+      (await service.status("alice")).history.map(({ id }) => id),
+      [completed.id],
+    );
+    await f.db.query(
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at) VALUES(?,?,?,?,?,?)",
+      [inFlight, f.id, f.token.split(".")[1], key, "analyzing", f.now() + 2],
+    );
+
+    await send(next, "222222222222222222222222");
+    assert.equal((await service.status("alice")).latest, null);
+    assert.deepEqual((await service.status("alice")).history, []);
+    const [archived] = await f.db.query(
+      "SELECT account_key,status,result FROM rocket_analyses WHERE id=?",
+      [completed.id],
+    );
+    assert.equal(archived.account_key, key);
+    assert.equal(archived.status, "archived");
+    assert.deepEqual(JSON.parse(archived.result), prior.latest.result);
+    const [cancelled] = await f.db.query(
+      "SELECT status,result FROM rocket_analyses WHERE id=?",
+      [inFlight],
+    );
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.result, null);
+
+    await send(original, "333333333333333333333333");
+    const restored = await service.status("alice");
+    assert.equal(restored.latest.result, null);
+    assert.equal(restored.latest.status, "cancelled");
+    assert.deepEqual(restored.history.find(({ id }) => id === completed.id), prior.latest);
+    assert.ok(!restored.history.some(({ id }) => id === legacy));
   } finally {
     await f.db.close();
   }

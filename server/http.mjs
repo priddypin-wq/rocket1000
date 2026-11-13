@@ -3,6 +3,7 @@ import { getDatabase } from "./database.mjs";
 import { ApiError, provisioningService } from "./provisioning.mjs";
 import { automationService } from "./automation.mjs";
 import { analysisQueue } from "./analysis-queue.mjs";
+import { accountSessions, assertAccountOrigin } from "./account-auth.mjs";
 export const responseHeaders = {
   "Cache-Control": "private, no-store, max-age=0",
   Pragma: "no-cache",
@@ -41,25 +42,76 @@ export function assertOrigin(req) {
   )
     throw new ApiError(403, "Request origin rejected");
 }
+function accountsRequired() {
+  return (
+    process.env.ROCKET_ACCOUNTS_REQUIRED === "1" ||
+    process.env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1"
+  );
+}
+function requireAccount() {
+  throw new ApiError(
+    401,
+    "Sign in to ROCKET1000 to use your private MT5 connection on this device.",
+    "ACCOUNT_SESSION_REQUIRED",
+  );
+}
+async function dashboardSession(req, db) {
+  const sessions = accountSessions(db);
+  const account = await sessions.read(req);
+  if (account) {
+    assertAccountOrigin(req);
+    const path = new URL(req.url).pathname;
+    if (
+      (path === "/api/mt5/connections" ||
+        (req.method !== "GET" &&
+          path !== "/api/mt5/session" &&
+          (path.startsWith("/api/mt5/") || path === "/api/billing"))) &&
+      (await sessions.legacyClaimAvailable(req, account))
+    )
+      throw new ApiError(
+        409,
+        "Link this browser’s existing private workspace or choose Continue separately in Account.",
+        "LEGACY_CLAIM_PENDING",
+      );
+    return account;
+  }
+  if (accountsRequired()) requireAccount();
+  const legacy = await browserSessions(db).read(req);
+  if (!legacy)
+    throw new ApiError(
+      401,
+      "Initialize this browser's private connection.",
+      "BROWSER_SESSION_REQUIRED",
+    );
+  return { ...legacy, kind: "legacy", userId: null, role: null, email: null };
+}
+/**
+ * @typedef {Awaited<ReturnType<typeof dashboardSession>>} DashboardSession
+ * @param {Request} req
+ * @param {(service: ReturnType<typeof provisioningService>, workspaceId: string, session: DashboardSession) => unknown} fn
+ */
 export async function dashboardRequest(req, fn) {
   return handle(async () => {
-    const session = await browserSessions(getDatabase()).read(req);
-    if (!session)
-      throw new ApiError(
-        401,
-        "Initialize this browser's private connection.",
-        "BROWSER_SESSION_REQUIRED",
-      );
     if (req.method !== "GET") assertOrigin(req);
-    const service = provisioningService(getDatabase());
-    await service.rateLimit(`dashboard:${session.id}`, 120);
-    return fn(service, session.id);
+    const db = getDatabase();
+    const session = await dashboardSession(req, db);
+    const service = provisioningService(db);
+    await service.rateLimit(
+      `dashboard:${session.kind === "account" ? session.deviceRateKey : session.id}`,
+      120,
+    );
+    return fn(service, session.id, session);
   });
 }
 export async function initializeBrowser(req) {
   return handle(async () => {
     assertOrigin(req);
     const db = getDatabase();
+    if (await accountSessions(db).read(req)) {
+      assertAccountOrigin(req);
+      return accountSessionProbe(req, db);
+    }
+    if (accountsRequired()) requireAccount();
     const sessions = browserSessions(db);
     const service = provisioningService(db);
     const existing = await sessions.read(req);
@@ -76,15 +128,17 @@ export async function initializeBrowser(req) {
 // without issuing another cookie or creating a second connection.
 export async function browserSessionStatus(req) {
   return handle(async () => {
-    const session = await browserSessions(getDatabase()).read(req);
-    if (!session)
-      throw new ApiError(
-        401,
-        "Initialize this browser's private connection.",
-        "BROWSER_SESSION_REQUIRED",
-      );
+    const db = getDatabase();
+    const session = await dashboardSession(req, db);
+    if (session.kind === "account") return accountSessionProbe(req, db);
     return { ok: true };
   });
+}
+async function accountSessionProbe(req, db) {
+  const { cookies } = await accountSessions(db).status(req);
+  const headers = new Headers(responseHeaders);
+  for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+  return Response.json({ ok: true }, { headers });
 }
 export async function handle(fn) {
   try {

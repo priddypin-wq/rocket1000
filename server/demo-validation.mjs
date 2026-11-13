@@ -55,8 +55,8 @@ export async function recordDemoValidation(tx, cid, uid, key, now) {
     )
       continue;
     const [analysis] = await tx.query(
-      "SELECT result FROM rocket_analyses WHERE id=? AND connection_id=? AND status='completed'",
-      [open.order.analysisId, cid],
+      "SELECT result FROM rocket_analyses WHERE id=? AND connection_id=? AND account_key=? AND status='completed'",
+      [open.order.analysisId, cid, key],
     );
     const assessment = analysis?.result ? JSON.parse(analysis.result) : null;
     if (

@@ -8,6 +8,12 @@ export const environmentCredentialRevision = (env = process.env) =>
       JSON.stringify([
         env.OPENAI_API_KEY || "",
         env.OPENAI_MODEL || "gpt-6.1-sol",
+        ...(env.OPENAI_ORG_ID?.trim() || env.OPENAI_PROJECT_ID?.trim()
+          ? [
+              env.OPENAI_ORG_ID?.trim() || "",
+              env.OPENAI_PROJECT_ID?.trim() || "",
+            ]
+          : []),
       ]),
     )
     .digest("hex");

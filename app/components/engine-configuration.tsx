@@ -1,5 +1,6 @@
 "use client";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import EmergencyStop from "./emergency-stop";
 
@@ -80,6 +81,9 @@ export default function EngineConfiguration() {
           <EmergencyStop compact />
         </div>
         <div className="engine-drawer-content">
+          <Link className="inner-text-link" href="/account" onClick={close}>
+            Account & subscription
+          </Link>
           {open ? <EngineDiagnostics /> : null}
         </div>
       </dialog>

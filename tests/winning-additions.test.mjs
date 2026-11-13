@@ -99,6 +99,10 @@ for (const [name, mutate] of [
     (c) => (c.execution.positionsAvailable = false),
   ],
   ["old engine", (c) => (c.execution.engineVersion = "old")],
+  [
+    "old EA without protected addition capability",
+    (c) => delete c.execution.protectedAdditions,
+  ],
   ["stale snapshot", (c) => (c.market.timestamp = NOW - 30001)],
   ["stale quote", (c) => (c.market.quoteTimestamp = NOW - 15001)],
   ["future quote", (c) => (c.market.quoteTimestamp = NOW + 2001)],
@@ -127,9 +131,34 @@ for (const [name, mutate] of [
 ])
   test(`winning additions reject ${name}`, () => {
     const ctx = context();
+    ctx.settings.maxPositions = 2;
+    ctx.execution.protectedAdditions = true;
+    ctx.market.positions[0].stop = 2099.25;
     mutate(ctx);
     assert.equal(winningAdditionAllowed(ctx, "BUY"), false);
   });
+
+test("only an explicit AI addition to one protected winner can use the optional second slot", () => {
+  const ctx = context();
+  ctx.settings.maxPositions = 2;
+  ctx.execution.protectedAdditions = true;
+  ctx.market.positions[0].stop = 2099.25;
+  assert.equal(winningAdditionAllowed(ctx, "BUY"), true);
+  assert.throws(() => orderRisk(ctx, entry()), /Additions require/);
+  const plan = {
+    ...entry(),
+    source: "ai",
+    entryAction: "ADD",
+    signalStrategy: "trend",
+    signalConfidence: 0.99,
+    engineVersion: ENGINE_VERSION,
+    signalExpiresAt: NOW + 15000,
+    signalBarTime: decisionBar(ctx.market),
+  };
+  assert.equal(orderRisk(ctx, plan).entryAction, "ADD");
+  ctx.market.positions[0].stop = 2099;
+  assert.throws(() => orderRisk(ctx, plan), /Additions require/);
+});
 
 test("first entries enforce quarter-percent aggregate risk and never round a minimum lot up", () => {
   const ctx = context();

@@ -90,9 +90,10 @@ test("one connection freshness deadline is shared by MT5, orders and analysis", 
   }
 });
 
-test("broker disconnection immediately makes the retained market snapshot stale everywhere", async () => {
+test("broker disconnection immediately withdraws the old quote and retains the last heartbeat", async () => {
   const f = await connected();
   try {
+    const [before] = await f.service.list("alice");
     await assert.rejects(
       f.service.telemetry(
         f.token,
@@ -102,7 +103,9 @@ test("broker disconnection immediately makes the retained market snapshot stale 
       (error) => error.code === "BROKER_DISCONNECTED",
     );
     await f.assertStatus("Disconnected", false);
-    assert.ok((await f.analysis.status("alice")).market);
+    assert.equal((await f.analysis.status("alice")).market, null);
+    const [after] = await f.service.list("alice");
+    assert.equal(after.installation.lastHeartbeat, before.installation.lastHeartbeat);
   } finally {
     await f.db.close();
   }

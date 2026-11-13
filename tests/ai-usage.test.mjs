@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixture } from "./helpers.mjs";
+import { fixture, seedSubscription } from "./helpers.mjs";
 import { usageService, tokenPrices } from "../server/ai-usage.mjs";
 const env = { OPENAI_MODEL: "gpt-6.1-sol", ROCKET_AI_DAILY_BUDGET_USD: "0.1" };
 const payload = {
@@ -142,6 +142,62 @@ test("STOP before dispatch cancels a reservation without calling or billing the 
     const sum = await usage.totals("alice");
     assert.equal(sum.estimatedUsd, 0);
     assert.equal(sum.reservedUsd, 0);
+  } finally {
+    await f.db.close();
+  }
+});
+test("a shared platform budget caps reservations across private workspaces", async () => {
+  const f = await fixture();
+  try {
+    const usage = usageService(f.db, {
+      now: f.now,
+      env: { ...env, ROCKET_AI_PLATFORM_DAILY_BUDGET_USD: "0.1" },
+    });
+    const large = { ...payload, input: "A".repeat(21000) };
+    const results = await Promise.allSettled(
+      ["alice", "bob"].map((uid) => usage.reserve(uid, large, env, "analysis")),
+    );
+    assert.equal(
+      results.filter((result) => result.status === "fulfilled").length,
+      1,
+    );
+    assert.equal(
+      results.find((result) => result.status === "rejected").reason.code,
+      "AI_PLATFORM_BUDGET_REACHED",
+    );
+  } finally {
+    await f.db.close();
+  }
+});
+test("a subscription covers only its workspace and enforces its monthly allowance before model dispatch", async () => {
+  const f = await fixture();
+  let calls = 0;
+  try {
+    await seedSubscription(f.db, "alice", f.now(), { allowance: 40000 });
+    const usage = usageService(f.db, {
+      now: f.now,
+      env: {
+        ...env,
+        ROCKET_SUBSCRIPTIONS_REQUIRED: "1",
+        ROCKET_AI_PLATFORM_DAILY_BUDGET_USD: "1",
+      },
+      provider: async () => {
+        calls++;
+        return { usage: { input_tokens: 100, output_tokens: 2400 } };
+      },
+    });
+    await usage.responder("alice")(payload, { env });
+    await assert.rejects(usage.responder("bob")(payload, { env }), {
+      code: "SUBSCRIPTION_REQUIRED",
+    });
+    await assert.rejects(usage.responder("alice")(payload, { env }), {
+      code: "AI_SUBSCRIPTION_ALLOWANCE_REACHED",
+    });
+    f.advance(31000);
+    await assert.rejects(usage.responder("alice")(payload, { env }), {
+      code: "SUBSCRIPTION_REQUIRED",
+    });
+    assert.equal(calls, 1);
   } finally {
     await f.db.close();
   }

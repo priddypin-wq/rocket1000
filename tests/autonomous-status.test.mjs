@@ -88,11 +88,12 @@ async function setup(type = "demo") {
     };
     const id = randomUUID();
     await f.db.query(
-      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,result) VALUES(?,?,?,?,?,?,?)",
       [
         id,
         f.id,
         f.token.split(".")[1],
+        accountKey(account.accountLogin, account.brokerServer, account.accountType),
         "completed",
         f.now(),
         JSON.stringify(result),

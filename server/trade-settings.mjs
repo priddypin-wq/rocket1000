@@ -52,7 +52,7 @@ export function validateTradeSettings(value) {
     maxAggregateRiskPct: [0.05, 0.25],
     maxDailyLossPct: [0.1, 1],
     maxDrawdownPct: [0.1, 5],
-    maxPositions: [1, 1],
+    maxPositions: [1, 2],
     minConfidence: [0.5, 1],
     intervalSeconds: [60, 3600],
     maxSpreadPoints: [1, 1000],
@@ -67,7 +67,7 @@ export function validateTradeSettings(value) {
   )
     throw new ApiError(
       422,
-      "Use positive broker sizes, up to 0.25% trade/aggregate risk, 1% daily loss, 5% drawdown and one position.",
+      "Use positive broker sizes, up to 0.25% trade/aggregate risk, 1% daily loss, 5% drawdown and two positions only for a protected addition.",
     );
   return s;
 }
@@ -89,7 +89,13 @@ export async function tradeSettings(tx, cid) {
     saved.maxAggregateRiskPct = Math.min(0.25, saved.maxAggregateRiskPct);
   if (Number.isFinite(saved?.maxDailyLossPct))
     saved.maxDailyLossPct = Math.min(1, saved.maxDailyLossPct);
-  if (Number.isFinite(saved?.maxPositions)) saved.maxPositions = 1;
+  const [addition] = await tx.query(
+    "SELECT a.enabled FROM rocket_protected_additions a JOIN rocket_direct_connections c ON c.id=a.connection_id WHERE a.connection_id=? AND a.account_login=c.expected_login AND a.broker_server=c.expected_server AND c.expected_type='demo'",
+    [cid],
+  );
+  if (Number.isFinite(saved?.maxPositions))
+    saved.maxPositions =
+      saved.maxPositions === 2 && addition?.enabled === 1 ? 2 : 1;
   return {
     settings: validateTradeSettings(saved),
     revision: r.revision,

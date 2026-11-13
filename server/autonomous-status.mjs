@@ -39,8 +39,8 @@ export function autonomousStatusService(db, { now = Date.now } = {}) {
       if (!c) return empty;
       const ctx = await tradeContext(tx, c.id, now());
       const [a] = await tx.query(
-        "SELECT result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
-        [c.id, ctx.i?.id || ""],
+        "SELECT result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND account_key=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+        [c.id, ctx.i?.id || "", ctx.consent.key],
       );
       const result = a?.result ? JSON.parse(a.result) : null;
       const fresh = !!(ctx.market && !ctx.connectionBlockers.length);
@@ -146,7 +146,7 @@ export function autonomousStatusService(db, { now = Date.now } = {}) {
         risk: {
           perTradePct: ctx.settings.riskPerTradePct,
           aggregatePct: ctx.settings.maxAggregateRiskPct ?? 0.25,
-          maxPositions: 1,
+          maxPositions: ctx.settings.maxPositions,
           dailyLossPct: ctx.settings.maxDailyLossPct,
           consecutiveLosses: ctx.execution?.consecutiveLossesVerified
             ? ctx.execution.consecutiveLosses

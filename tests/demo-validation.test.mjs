@@ -204,11 +204,12 @@ async function seedCycle(f, mutate = () => {}) {
   };
   mutate(cycle);
   await f.db.query(
-    "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,completed_at,result) VALUES(?,?,?,?,?,?,?)",
+    "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,completed_at,result) VALUES(?,?,?,?,?,?,?,?)",
     [
       ids.analysis,
       f.id,
       f.token.split(".")[1],
+      f.key(),
       "completed",
       f.now() - 4000,
       f.now() - 3500,

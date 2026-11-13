@@ -168,6 +168,18 @@ test("failed actions show actual errors and a later retry is allowed", async () 
   assert.equal(controls.getSnapshot().error, "");
 });
 
+test("background status refresh cannot hide a failed Start reason", async () => {
+  const controls = createEngineControls({
+    request: async (_path, body) => {
+      if (body) throw Error("The MT5 candle history is incomplete.");
+      return response(stopped);
+    },
+  });
+  assert.equal(await controls.action({ action: "start-analysis" }), false);
+  assert.equal(await controls.refresh(), true);
+  assert.match(controls.getSnapshot().error, /candle history is incomplete/);
+});
+
 test("one state store updates Home and drawer subscribers consistently", async () => {
   const controls = createEngineControls({
     request: async () => response(stopped),

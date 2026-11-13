@@ -4,9 +4,38 @@ import { unzipSync, strFromU8 } from "fflate";
 import { TIMEFRAMES } from "../server/market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { randomUUID } from "node:crypto";
-import { tradeSettings } from "../server/trade-settings.mjs";
+import { accountKey, tradeSettings } from "../server/trade-settings.mjs";
 import { adaptiveProfile } from "../server/market.mjs";
 export const NOW = 1800000000000;
+export async function seedSubscription(
+  db,
+  uid,
+  now,
+  { allowance = 1000000, expiresAt = now + 30000 } = {},
+) {
+  const reference = "checkout-" + randomUUID();
+  const code = "SUB_" + randomUUID().replaceAll("-", "");
+  await db.query(
+    "INSERT INTO rocket_billing_checkouts(reference,workspace_id,user_id,email,plan_id,plan_name,plan_code,amount,allowance,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,'paid',?)",
+    [
+      reference,
+      uid,
+      uid,
+      "fixture@example.test",
+      "demo",
+      "Fixture",
+      "PLN_fixture",
+      19900,
+      allowance,
+      now,
+    ],
+  );
+  await db.query(
+    "INSERT INTO rocket_billing_subscriptions(code,workspace_id,checkout_ref,customer_code,state,changed_at,period_start,expires_at) VALUES(?,?,?,?,'active',?,?,?)",
+    [code, uid, reference, "CUS_fixture", now, now, expiresAt],
+  );
+  return code;
+}
 export const terminal = {
   accountLogin: "12345678",
   brokerServer: "Broker-Live",
@@ -116,6 +145,10 @@ export async function approveFixtureLive(trade, uid = "alice") {
 // helper is not application code, never calls a provider and cannot qualify Live.
 export async function seedAiEntryFixture(f, patch = {}) {
   await seedAnalysisEngineFixture(f);
+  const [connection] = await f.db.query(
+    "SELECT expected_login,expected_server,expected_type FROM rocket_direct_connections WHERE id=?",
+    [f.id],
+  );
   const [snapshot] = await f.db.query(
     "SELECT payload FROM rocket_market_snapshots WHERE connection_id=?",
     [f.id],
@@ -149,8 +182,20 @@ export async function seedAiEntryFixture(f, patch = {}) {
     ...patch,
   };
   await f.db.query(
-    "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
-    [id, f.id, f.token.split(".")[1], "completed", f.now(), JSON.stringify(a)],
+    "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,result) VALUES(?,?,?,?,?,?,?)",
+    [
+      id,
+      f.id,
+      f.token.split(".")[1],
+      accountKey(
+        connection.expected_login,
+        connection.expected_server,
+        connection.expected_type,
+      ),
+      "completed",
+      f.now(),
+      JSON.stringify(a),
+    ],
   );
   return id;
 }
@@ -166,7 +211,6 @@ export async function seedAnalysisEngineFixture(f) {
     "SELECT session_id FROM rocket_execution WHERE connection_id=?",
     [f.id],
   );
-  const { accountKey } = await import("../server/trade-settings.mjs");
   await f.db.query(
     "INSERT INTO rocket_engine_scheduler(id,mode,last_seen) VALUES('fixture','worker',?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen",
     [f.now()],

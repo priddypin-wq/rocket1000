@@ -5,6 +5,7 @@ import { analysisService } from "../server/analysis-service.mjs";
 import { MODEL } from "../server/ai-analysis.mjs";
 import { adaptiveProfile } from "../server/market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import { accountKey } from "../server/trade-settings.mjs";
 import { decision, fixture, market, terminal } from "./helpers.mjs";
 
 // Interrupted-process and clock fixtures only. No external provider or broker.
@@ -18,8 +19,15 @@ async function register(f) {
 async function interrupted(f, { health = true } = {}) {
   const id = randomUUID();
   await f.db.query(
-    "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at) VALUES(?,?,?,?,?)",
-    [id, f.id, f.token.split(".")[1], "analyzing", f.now()],
+    "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at) VALUES(?,?,?,?,?,?)",
+    [
+      id,
+      f.id,
+      f.token.split(".")[1],
+      accountKey(terminal.accountLogin, terminal.brokerServer, "demo"),
+      "analyzing",
+      f.now(),
+    ],
   );
   if (health)
     await f.db.query(

@@ -12,6 +12,16 @@ import { runtimeAiEnvironment } from "./ai-auth.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
 import { openaiCredentialService } from "./openai-credentials.mjs";
 import { recentConnectionTimestamp } from "./connection-health.mjs";
+
+function matchesAccount(connection, installation) {
+  return (
+    connection &&
+    connection.expected_login === installation.accountLogin &&
+    connection.expected_server === installation.brokerServer &&
+    connection.expected_type === installation.accountType
+  );
+}
+
 export function analysisService(
   db,
   {
@@ -48,11 +58,27 @@ export function analysisService(
         profile: null,
         market: null,
       };
-    const analyses = await db.query(
-      "SELECT * FROM rocket_analyses WHERE connection_id=? AND installation_id=? ORDER BY created_at DESC LIMIT 10",
-      [connection.id, connection.installation?.id || ""],
-    );
-    const a = analyses[0];
+    const i = connection.installation;
+    const analyses =
+      i?.accountLogin &&
+      i.brokerServer &&
+      i.accountType &&
+      i.accountLogin === connection.expectedLogin &&
+      i.brokerServer === connection.expectedServer &&
+      i.accountType === connection.expectedType
+        ? await db.query(
+            "SELECT a.* FROM rocket_analyses a JOIN rocket_direct_connections c ON c.id=a.connection_id WHERE c.id=? AND a.installation_id=? AND a.account_key=? AND c.expected_login=? AND c.expected_server=? AND c.expected_type=? ORDER BY a.created_at DESC LIMIT 10",
+            [
+              connection.id,
+              i.id,
+              accountKey(i.accountLogin, i.brokerServer, i.accountType),
+              i.accountLogin,
+              i.brokerServer,
+              i.accountType,
+            ],
+          )
+        : [];
+    const a = analyses.find((row) => row.status !== "archived");
     const [health] = await db.query(
       "SELECT * FROM rocket_ai_health WHERE connection_id=?",
       [connection.id],
@@ -109,10 +135,12 @@ export function analysisService(
         ? {
             id: row.id,
             status:
-              row.status === "analyzing" &&
-              serverTime - Number(row.created_at) > 90000
-                ? "error"
-                : row.status,
+              row.status === "archived"
+                ? "completed"
+                : row.status === "analyzing" &&
+                    serverTime - Number(row.created_at) > 90000
+                  ? "error"
+                  : row.status,
             createdAt: Number(row.created_at),
             completedAt: row.completed_at ? Number(row.completed_at) : null,
             result: row.result ? JSON.parse(row.result) : null,
@@ -151,11 +179,22 @@ export function analysisService(
         "MT5_NOT_CONNECTED",
       );
     const id = randomUUID();
+    const key = accountKey(
+      c.installation.accountLogin,
+      c.installation.brokerServer,
+      c.installation.accountType,
+    );
     const snapshot = await db.transaction(async (tx) => {
-      await tx.query(
-        `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+      const [lockedConnection] = await tx.query(
+        `SELECT expected_login,expected_server,expected_type FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
         [c.id],
       );
+      if (!matchesAccount(lockedConnection, c.installation))
+        throw new ApiError(
+          409,
+          "MT5 account changed. Wait for fresh broker data.",
+          "ANALYSIS_CANCELLED",
+        );
       if (beforeSnapshot) await beforeSnapshot(tx);
       const [prior] = await tx.query(
         "SELECT created_at FROM rocket_analyses WHERE connection_id=? ORDER BY created_at DESC LIMIT 1",
@@ -183,24 +222,15 @@ export function analysisService(
         );
       const data = validateSnapshot(JSON.parse(s.payload), now());
       requireMultiTimeframe(data);
-      await markManagedPositions(
-        tx,
-        c.id,
-        accountKey(
-          c.installation.accountLogin,
-          c.installation.brokerServer,
-          c.installation.accountType,
-        ),
-        data.positions,
-      );
+      await markManagedPositions(tx, c.id, key, data.positions);
       const { settings, revision } = await tradeSettings(tx, c.id);
       const [execution] = await tx.query(
         "SELECT session_id,payload FROM rocket_execution WHERE connection_id=? AND installation_id=?",
         [c.id, c.installation.id],
       );
       await tx.query(
-        "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at) VALUES(?,?,?,?,?)",
-        [id, c.id, c.installation.id, "analyzing", now()],
+        "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at) VALUES(?,?,?,?,?,?)",
+        [id, c.id, c.installation.id, key, "analyzing", now()],
       );
       await tx.query(
         "INSERT INTO rocket_ai_health(connection_id,state,checked_at) VALUES(?,?,?) ON CONFLICT(connection_id) DO UPDATE SET state=excluded.state,checked_at=excluded.checked_at,error_code=NULL,error=NULL",
@@ -229,7 +259,7 @@ export function analysisService(
       };
       const [current] = await service.list(uid);
       if (
-        current.status !== "Connected" ||
+        current?.status !== "Connected" ||
         current.installation.id !== c.installation.id ||
         current.stopped !== c.stopped
       )
@@ -241,7 +271,7 @@ export function analysisService(
       await db.transaction(async (tx) => {
         if (beforePersist) await beforePersist(tx);
         const [lockedConnection] = await tx.query(
-          `SELECT stopped FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+          `SELECT stopped,expected_login,expected_server,expected_type FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
           [c.id],
         );
         const [activeInstallation] = await tx.query(
@@ -254,12 +284,13 @@ export function analysisService(
           [c.id],
         );
         const [final] = await tx.query(
-          "SELECT status FROM rocket_analyses WHERE id=?",
+          "SELECT status,account_key FROM rocket_analyses WHERE id=?",
           [id],
         );
         if (
           final?.status !== "analyzing" ||
-          !lockedConnection ||
+          final.account_key !== key ||
+          !matchesAccount(lockedConnection, c.installation) ||
           !!lockedConnection.stopped !== c.stopped ||
           activeInstallation?.id !== c.installation.id ||
           currentSettings.revision !== snapshot.revision ||
@@ -281,26 +312,28 @@ export function analysisService(
       });
       return { id, ...result };
     } catch (e) {
-      await db.query(
-        "UPDATE rocket_analyses SET status=?,error=?,completed_at=? WHERE id=? AND status=?",
-        [
-          "error",
-          e instanceof ApiError ? e.message : "Analysis failed",
-          now(),
-          id,
-          "analyzing",
-        ],
-      );
-      await db.query(
-        "UPDATE rocket_ai_health SET state='error',checked_at=?,error_code=?,error=? WHERE connection_id=? AND checked_at=?",
-        [
-          now(),
-          e instanceof ApiError ? e.code : "AI_UNAVAILABLE",
-          e instanceof ApiError ? e.message : "Analysis failed",
-          c.id,
-          snapshot.createdAt,
-        ],
-      );
+      const message = e instanceof ApiError ? e.message : "Analysis failed";
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `SELECT id FROM rocket_direct_connections WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+          [c.id],
+        );
+        const [failed] = await tx.query(
+          "UPDATE rocket_analyses SET status='error',error=?,completed_at=? WHERE id=? AND status='analyzing' RETURNING id",
+          [message, now(), id],
+        );
+        if (failed)
+          await tx.query(
+            "UPDATE rocket_ai_health SET state='error',checked_at=?,error_code=?,error=? WHERE connection_id=? AND checked_at=?",
+            [
+              now(),
+              e instanceof ApiError ? e.code : "AI_UNAVAILABLE",
+              message,
+              c.id,
+              snapshot.createdAt,
+            ],
+          );
+      });
       throw e;
     }
   }

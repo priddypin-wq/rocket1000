@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { zipSync, strToU8 } from "fflate";
 import { validateSnapshot } from "./market.mjs";
 import { ApiError } from "./errors.mjs";
+import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { personalizedEaSource } from "./ea-source.mjs";
 import { pauseActivation } from "./engine-activation.mjs";
 import {
@@ -145,10 +146,19 @@ export function provisioningService(
       return { id };
     });
   }
-  async function download(
+  /** @param {string} uid
+   * @param {string} cid
+   * @param {{ format?: string, replaceCredential?: boolean, expectedInstallationId?: string | null, requestId?: string }} [options]
+   */
+  async function prepareDownload(
     uid,
     cid,
-    { format = "package", replaceCredential = false } = {},
+    {
+      format = "package",
+      replaceCredential = false,
+      expectedInstallationId,
+      requestId,
+    } = {},
   ) {
     if (!["package", "source"].includes(format))
       throw new ApiError(400, "Unsupported EA download format.");
@@ -165,17 +175,67 @@ export function provisioningService(
     const createdAt = now();
     return db.transaction(async (tx) => {
       await owned(tx, uid, cid, true);
+      const [current] = await tx.query(
+        "SELECT id,revoked_at FROM rocket_direct_installations WHERE connection_id=? ORDER BY CASE WHEN revoked_at IS NULL THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1",
+        [cid],
+      );
+      let replay = false;
+      if (replaceCredential) {
+        if (
+          !uuid.test(expectedInstallationId || "") ||
+          !uuid.test(requestId || "")
+        )
+          throw new ApiError(
+            400,
+            "Review the current installation before replacing it.",
+            "EA_REPLACEMENT_REVIEW_REQUIRED",
+          );
+        const [action] = await tx.query(
+          "SELECT * FROM rocket_ea_installation_actions WHERE connection_id=? AND request_id=?",
+          [cid, requestId],
+        );
+        if (action) {
+          if (
+            action.reviewed_installation_id !== expectedInstallationId ||
+            action.format !== format ||
+            action.result_installation_id !== current?.id ||
+            current.revoked_at !== null
+          )
+            throw new ApiError(
+              409,
+              "This replacement request was already completed or superseded. Refresh the installation before reviewing another replacement.",
+              "EA_REPLACEMENT_SUPERSEDED",
+            );
+          replay = true;
+        }
+      }
+      if (
+        !replay &&
+        expectedInstallationId !== undefined &&
+        expectedInstallationId !== (current?.id || null)
+      )
+        throw new ApiError(
+          409,
+          "The EA installation changed. Refresh its status and review the current installation.",
+          "EA_INSTALLATION_CHANGED",
+        );
       const [previous] = await tx.query(
         "SELECT i.*,v.sealed FROM rocket_direct_installations i LEFT JOIN rocket_ea_download_credentials v ON v.installation_id=i.id WHERE i.connection_id=? AND i.revoked_at IS NULL AND i.expires_at>? ORDER BY i.created_at DESC LIMIT 1",
         [cid, createdAt],
       );
-      if (previous && !previous.sealed && !replaceCredential)
+      if (replay && !previous?.sealed)
+        throw new ApiError(
+          409,
+          "The completed replacement is no longer available. Refresh the installation before trying again.",
+          "EA_REPLACEMENT_SUPERSEDED",
+        );
+      if (previous && !previous.sealed && (!replaceCredential || replay))
         throw new ApiError(
           409,
           "Your existing EA credential is still active and has not been replaced. Reconnect that installation once to preserve it, or explicitly review replacing the EA installation.",
           "EA_ROTATION_REVIEW_REQUIRED",
         );
-      const reuse = !!previous?.sealed && !replaceCredential;
+      const reuse = !!previous?.sealed && (!replaceCredential || replay);
       const id = reuse ? previous.id : randomUUID();
       const token = reuse
         ? unsealEaCredential(previous.sealed, uid, cid, id, env)
@@ -212,10 +272,20 @@ export function provisioningService(
               },
               { level: 6 },
             );
+      const result = {
+        bytes: archive,
+        connectionId: cid,
+        installationId: id,
+        protocol: 4,
+        engineVersion: ENGINE_VERSION,
+        sourceSha256: manifest.sourceSha256,
+        binarySha256: manifest.binarySha256,
+        sha256: sha(archive),
+      };
       // Commit only after the package is fully assembled. Failed generation cannot revoke a working EA.
       if (reuse) {
         await audit(tx, uid, cid, "ea_download_existing_credential_preserved");
-        return archive;
+        return result;
       }
       const sealed = sealEaCredential(token, uid, cid, id, env);
       await disableTrading(tx, cid, createdAt);
@@ -236,8 +306,16 @@ export function provisioningService(
         "INSERT INTO rocket_ea_download_credentials(installation_id,sealed) VALUES(?,?)",
         [id, sealed],
       );
-      return archive;
+      if (replaceCredential)
+        await tx.query(
+          "INSERT INTO rocket_ea_installation_actions(connection_id,request_id,format,reviewed_installation_id,result_installation_id,created_at) VALUES(?,?,?,?,?,?)",
+          [cid, requestId, format, expectedInstallationId, id, createdAt],
+        );
+      return result;
     });
+  }
+  async function download(uid, cid, options) {
+    return (await prepareDownload(uid, cid, options)).bytes;
   }
   function publicInstallation(i) {
     if (!i) return null;
@@ -283,19 +361,53 @@ export function provisioningService(
       }),
     );
   }
-  async function revoke(uid, cid) {
-    await db.transaction(async (tx) => {
+  async function revoke(uid, cid, expectedInstallationId) {
+    return db.transaction(async (tx) => {
       await owned(tx, uid, cid, true);
+      const [current] = await tx.query(
+        "SELECT id,revoked_at FROM rocket_direct_installations WHERE connection_id=? ORDER BY CASE WHEN revoked_at IS NULL THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1",
+        [cid],
+      );
+      if (
+        expectedInstallationId !== undefined &&
+        (!uuid.test(expectedInstallationId || "") ||
+          current?.id !== expectedInstallationId)
+      )
+        throw new ApiError(
+          409,
+          "The EA installation changed. Refresh its status before revoking access.",
+          "EA_INSTALLATION_CHANGED",
+        );
+      if (!current)
+        throw new ApiError(
+          409,
+          "No EA installation is available to revoke.",
+          "EA_INSTALLATION_MISSING",
+        );
+      if (current.revoked_at !== null)
+        return {
+          ok: true,
+          connectionId: cid,
+          installationId: current.id,
+          revokedAt: Number(current.revoked_at),
+        };
+      const revokedAt = now();
       await disableTrading(tx, cid, now());
       await tx.query(
         "UPDATE rocket_direct_installations SET revoked_at=? WHERE connection_id=? AND revoked_at IS NULL",
-        [now(), cid],
+        [revokedAt, cid],
       );
       await tx.query(
         "UPDATE rocket_direct_connections SET stopped=1 WHERE id=?",
         [cid],
       );
       await audit(tx, uid, cid, "credentials_revoked");
+      return {
+        ok: true,
+        connectionId: cid,
+        installationId: current.id,
+        revokedAt,
+      };
     });
   }
   async function stop(uid) {
@@ -427,9 +539,21 @@ export function provisioningService(
             [i.connection_id],
           );
           await tx.query(
-            "UPDATE rocket_analyses SET status='cancelled',result=NULL,error='MT5 account changed',completed_at=? WHERE connection_id=?",
+            "UPDATE rocket_analyses SET status='cancelled',result=NULL,error='MT5 account changed',completed_at=? WHERE connection_id=? AND status IN ('analyzing','pending','running')",
             [now(), i.connection_id],
           );
+          // Keep prior results as history even if the same account reconnects
+          // before its previous signal would otherwise have expired.
+          await tx.query(
+            "UPDATE rocket_analyses SET status='archived' WHERE connection_id=? AND account_key=? AND status='completed'",
+            [
+              i.connection_id,
+              accountKey(i.expected_login, i.expected_server, i.expected_type),
+            ],
+          );
+          await tx.query("DELETE FROM rocket_ai_health WHERE connection_id=?", [
+            i.connection_id,
+          ]);
           await tx.query(
             "UPDATE rocket_direct_connections SET expected_login=?,expected_server=?,expected_type=? WHERE id=?",
             [
@@ -468,8 +592,12 @@ export function provisioningService(
       if (!input.brokerConnected) {
         await pauseForReconnect(tx, i.connection_id, now());
         await tx.query(
-          "UPDATE rocket_direct_installations SET last_heartbeat=NULL,last_error=NULL,last_error_at=NULL WHERE id=?",
-          [id],
+          "DELETE FROM rocket_market_snapshots WHERE connection_id=?",
+          [i.connection_id],
+        );
+        await tx.query(
+          "UPDATE rocket_direct_installations SET last_error=?,last_error_at=? WHERE id=?",
+          ["BROKER_DISCONNECTED", now(), id],
         );
         return {
           error: [
@@ -573,7 +701,25 @@ export function provisioningService(
           "INSERT INTO rocket_market_snapshots(connection_id,installation_id,payload,received_at) VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET installation_id=excluded.installation_id,payload=excluded.payload,received_at=excluded.received_at",
           [i.connection_id, id, JSON.stringify(snapshot), now()],
         );
+      } else if (
+        input.eaProtocol === 4 &&
+        (register || input.marketUnavailable === true)
+      ) {
+        // A registration without prices or an explicit quote outage cannot
+        // authorize execution using a snapshot from before that outage.
+        await tx.query(
+          "DELETE FROM rocket_market_snapshots WHERE connection_id=?",
+          [i.connection_id],
+        );
       }
+      if (
+        input.execution?.brokerSpecification !== undefined &&
+        input.execution.brokerSpecification?.symbol !== reportedSymbol
+      )
+        throw new ApiError(
+          422,
+          "Broker specification does not match the registered EA chart.",
+        );
       await tx.query(
         "UPDATE rocket_direct_installations SET registered_at=COALESCE(registered_at,?),last_heartbeat=?,last_error=NULL,last_error_at=NULL,account_login=?,broker_server=?,account_type=?,terminal_build=? WHERE id=?",
         [
@@ -633,5 +779,15 @@ export function provisioningService(
       [uid],
     );
   }
-  return { create, list, download, revoke, stop, telemetry, logs, rateLimit };
+  return {
+    create,
+    list,
+    download,
+    prepareDownload,
+    revoke,
+    stop,
+    telemetry,
+    logs,
+    rateLimit,
+  };
 }

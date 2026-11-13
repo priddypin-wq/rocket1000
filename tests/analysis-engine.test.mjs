@@ -224,6 +224,38 @@ test("START requires an actual scheduler check-in and never claims an unstarted 
   }
 });
 
+test("starting analysis preserves the selected strategy, mode and settings revision", async () => {
+  const f = await setup();
+  try {
+    const [before] = await f.db.query(
+      "SELECT payload FROM rocket_trade_preferences WHERE connection_id=?",
+      [f.id],
+    );
+    const prefs = {
+      ...JSON.parse(before.payload),
+      strategy: "scalping",
+      tradingMode: "aggressive",
+    };
+    const revision = "preserve-explicit-strategy-fixture";
+    await f.db.query(
+      "UPDATE rocket_trade_preferences SET revision=?,payload=? WHERE connection_id=?",
+      [revision, JSON.stringify(prefs), f.id],
+    );
+    await f.engine.heartbeat();
+    const start = await f.engine.start("alice", { analysisOnly: true });
+    assert.equal(start.state, "scheduled");
+    assert.equal(start.executionAuthorized, false);
+    const [after] = await f.db.query(
+      "SELECT revision,payload FROM rocket_trade_preferences WHERE connection_id=?",
+      [f.id],
+    );
+    assert.equal(after.revision, revision);
+    assert.deepEqual(JSON.parse(after.payload), prefs);
+  } finally {
+    await f.db.close();
+  }
+});
+
 for (const [label, patch] of [
   ["Algo Trading disabled", { tradeAllowed: false }],
 ])
@@ -338,7 +370,10 @@ test("queue scheduler liveness is scoped to its connection and execution require
     assert.equal(await active(), true);
     f.advance(150001);
     await f.engine.heartbeat("queue", `queue:${f.id}:probe`);
-    assert.equal((await f.engine.status("alice")).scheduler.configured, true);
+    const stalled = await f.engine.status("alice");
+    assert.equal(stalled.state, "suspended");
+    assert.equal(stalled.scheduler.configured, false);
+    assert.equal((await f.engine.scheduler(f.id)).configured, true);
     assert.equal(
       await active(),
       false,

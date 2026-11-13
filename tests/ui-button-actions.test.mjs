@@ -2,10 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import ts from "typescript";
 import React from "react";
-import { requestBrowserDownload } from "../lib/browser-download.mjs";
+import {
+  requestBrowserDownload,
+  requestEaDownload,
+} from "../lib/browser-download.mjs";
 import * as actionConfirmation from "../lib/action-confirmation.mjs";
+import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 
 // Handler tests use controlled transports and DOM primitives only. They never
 // contact an API provider, production server, MT5 terminal or broker.
@@ -109,8 +114,12 @@ async function harness(filename, { modules = {}, initial = [] } = {}) {
       },
     },
     "next/link": { default: "a" },
-    "../../lib/browser-download.mjs": { requestBrowserDownload },
+    "../../lib/browser-download.mjs": {
+      requestBrowserDownload,
+      requestEaDownload,
+    },
     "../../lib/action-confirmation.mjs": actionConfirmation,
+    "../../lib/engine-version.mjs": { ENGINE_VERSION },
     "../../lib/use-orders": {
       brokerNumber: (value) => String(value),
       useOrders: () => ({ data: null, error: "" }),
@@ -219,6 +228,7 @@ const workspace = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "Connected",
       installation: {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         accountLogin: "123",
         brokerServer: "Fixture-Demo",
         accountType: "demo",
@@ -242,9 +252,27 @@ const metadata = {
 };
 const generatedConnection = {
   connectionId: workspace.connections[0].id,
+  installationId: workspace.connections[0].installation.id,
   serverUrl: workspace.serverUrl,
   verifiedAt: workspace.verifiedAt,
 };
+
+function eaResponse(mime, installationId = generatedConnection.installationId) {
+  const content =
+    mime === "application/zip"
+      ? "PK\u0003\u0004controlled"
+      : "// ROCKET1000 EA fixture";
+  return new Response(content, {
+    headers: {
+      "Content-Type": mime,
+      "X-Rocket-Connection": generatedConnection.connectionId,
+      "X-Rocket-Installation": installationId,
+      "X-Rocket-Protocol": "4",
+      "X-Rocket-Engine": ENGINE_VERSION,
+      "X-Rocket-SHA256": createHash("sha256").update(content).digest("hex"),
+    },
+  });
+}
 
 test("HTTP success alone cannot claim a generated connection, revoked credential or saved key", async () => {
   const loading = await harness("mt5-connection");
@@ -335,7 +363,16 @@ test("MT5 Generate and Revoke serialize synchronous taps and retain confirmed su
     assert.equal(calls.length, 1);
     assert.equal(calls[0].path, endpoint);
     pending.resolve(
-      response(endpoint === "generate" ? generatedConnection : { ok: true }),
+      response(
+        endpoint === "generate"
+          ? generatedConnection
+          : {
+              ok: true,
+              connectionId: generatedConnection.connectionId,
+              installationId: generatedConnection.installationId,
+              revokedAt: 1800000001000,
+            },
+      ),
     );
     await settled();
     const result = text(component.render());
@@ -357,7 +394,14 @@ test("MT5 Generate and Revoke serialize synchronous taps and retain confirmed su
 test("MT5 Copy clears stale notices and reports clipboard denial without false success", async () => {
   const b = browser();
   try {
-    const component = await harness("mt5-connection", { initial: [workspace] });
+    const component = await harness("mt5-connection", {
+      initial: [workspace],
+      modules: {
+        "../../lib/mt5-client": {
+          mt5Api: async () => response(generatedConnection),
+        },
+      },
+    });
     button(component.render(), "Copy EA Connection URL").props.onClick();
     await settled();
     assert.deepEqual(b.copied, [workspace.serverUrl]);
@@ -405,13 +449,10 @@ test("compiled EA and MetaEditor source downloads issue one request and preserve
       assert.deepEqual(download[0].body, {
         connectionId: workspace.connections[0].id,
         format,
+        expectedInstallationId: generatedConnection.installationId,
       });
-      pending.resolve(
-        new Response("controlled artifact", {
-          headers: { "Content-Type": mime },
-        }),
-      );
-      await settled();
+      pending.resolve(eaResponse(mime));
+      await new Promise((resolve) => setTimeout(resolve, 50));
       assert.match(text(component.render()), /download requested/);
       assert.equal(
         b.downloads.at(-1).download,
@@ -466,9 +507,7 @@ test("EA replacement stays explicit and only the confirmed handler rotates its c
     });
     assert.equal(prevented, true);
     pending.resolve(
-      new Response("controlled replacement", {
-        headers: { "Content-Type": "application/zip" },
-      }),
+      eaResponse("application/zip", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
     );
     await settled();
     component.close();

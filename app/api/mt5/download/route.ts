@@ -22,7 +22,14 @@ export const POST = (req: Request) =>
         typeof input !== "object" ||
         Array.isArray(input) ||
         Object.keys(input).some(
-          (k) => !["connectionId", "format", "replaceCredential"].includes(k),
+          (k) =>
+            ![
+              "connectionId",
+              "format",
+              "replaceCredential",
+              "expectedInstallationId",
+              "requestId",
+            ].includes(k),
         )
       )
         throw new ApiError(400, "Invalid private EA download request.");
@@ -30,7 +37,11 @@ export const POST = (req: Request) =>
         connectionId,
         format = "source",
         replaceCredential = false,
+        expectedInstallationId,
+        requestId,
       } = input;
+      if (typeof replaceCredential !== "boolean")
+        throw new ApiError(400, "Invalid EA replacement request.");
       await service.rateLimit(`download:${uid}`, 5);
       if (
         typeof connectionId !== "string" ||
@@ -55,11 +66,13 @@ export const POST = (req: Request) =>
           "The server address changed. Generate the connection again.",
           "CONNECTION_NOT_GENERATED",
         );
-      const bytes = await service.download(uid, connectionId, {
+      const artifact = await service.prepareDownload(uid, connectionId, {
         format,
         replaceCredential,
+        expectedInstallationId,
+        requestId,
       });
-      return new Response(new Uint8Array(bytes), {
+      return new Response(new Uint8Array(artifact.bytes), {
         headers: {
           ...responseHeaders,
           "Content-Type":
@@ -67,6 +80,11 @@ export const POST = (req: Request) =>
               ? "text/x-mql5; charset=utf-8"
               : "application/zip",
           "Content-Disposition": `attachment; filename="ROCKET1000_EA.${format === "source" ? "mq5" : "zip"}"`,
+          "X-Rocket-Connection": artifact.connectionId,
+          "X-Rocket-Installation": artifact.installationId,
+          "X-Rocket-Protocol": String(artifact.protocol),
+          "X-Rocket-Engine": artifact.engineVersion,
+          "X-Rocket-SHA256": artifact.sha256,
         },
       });
     },

@@ -54,6 +54,24 @@ export type AutoState = {
     currency?: string;
   };
   connectionBlockers: string[];
+  brokerSpecification?: null | {
+    symbol: string;
+    sessions: [number, number, number, boolean][] | null;
+    swap: { mode: number; long: number; short: number } | null;
+    minimumBuyMargin: number | null;
+    minimumSellMargin: number | null;
+    minimumVolume: number;
+    stopLevel: number;
+    freezeLevel: number | null;
+    tradeExecutionMode: number | null;
+    observedCommissionPerLot: number | null;
+    currency: string | null;
+    bid: number | null;
+    ask: number | null;
+    spreadPoints: number | null;
+    marketAt: number | null;
+    historyBars: number | null;
+  };
   permissionActive: boolean;
   settings: TradeSettings;
   automation: null | {

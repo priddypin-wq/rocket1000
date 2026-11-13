@@ -363,8 +363,8 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
               status: "Broker pending",
             });
       const [analysis] = await tx.query(
-        "SELECT * FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' AND result IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-        [c.id, i?.id || ""],
+        "SELECT * FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND account_key=? AND status='completed' AND result IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+        [c.id, i?.id || "", key],
       );
       const [credential] = await tx.query(
         "SELECT model FROM rocket_openai_credentials WHERE user_id=?",

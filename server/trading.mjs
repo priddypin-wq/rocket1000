@@ -22,6 +22,10 @@ import {
 } from "./engine-activation.mjs";
 import { demoValidation, recordDemoValidation } from "./demo-validation.mjs";
 import { validateRisk } from "../lib/risk.mjs";
+import { validateBrokerSpecification } from "./broker-specification.mjs";
+import { recentConnectionTimestamp } from "./connection-health.mjs";
+import { billingEntitlement } from "./billing.mjs";
+import { openaiServerManaged } from "./openai-credentials.mjs";
 import {
   accountKey,
   tradeSettings,
@@ -72,6 +76,30 @@ export function validateExecution(s) {
   const clean = Object.fromEntries(
     [...positive, ...nonnegative, ...flags].map((k) => [k, s[k]]),
   );
+  if (s.tradePermissions !== undefined) {
+    const flags = [
+      "terminalAlgoTrading",
+      "eaAlgoTrading",
+      "accountTrading",
+      "accountExpertTrading",
+    ];
+    if (
+      !s.tradePermissions ||
+      flags.some((key) => typeof s.tradePermissions[key] !== "boolean")
+    )
+      throw new ApiError(422, "Invalid MT5 trading permission diagnostics.");
+    clean.tradePermissions = Object.fromEntries(
+      flags.map((key) => [key, s.tradePermissions[key]]),
+    );
+    // A permission can change while the terminal builds the packet. Require
+    // both the native aggregate check and every reported permission.
+    clean.tradeAllowed =
+      s.tradeAllowed && flags.every((key) => clean.tradePermissions[key]);
+  }
+  if (s.brokerSpecification !== undefined)
+    clean.brokerSpecification = validateBrokerSpecification(
+      s.brokerSpecification,
+    );
   for (const key of [
     "realizedToday",
     "freezeLevel",
@@ -105,6 +133,8 @@ export function validateExecution(s) {
     "sessionOpen",
     "costsVerified",
     "consecutiveLossesVerified",
+    "protectedAdditions",
+    "finalPartialReconciliation",
   ])
     if (s[name] !== undefined) {
       if (typeof s[name] !== "boolean")
@@ -422,7 +452,7 @@ export async function tradeContext(tx, cid, now) {
   );
   const analysisEngineActive = !!(
     analysisEngine &&
-    (process.env.ROCKET_OPENAI_SERVER_MANAGED === "0" ||
+    (!openaiServerManaged() ||
       (analysisEngine.key_revision.startsWith("environment:")
         ? analysisEngine.key_revision === environmentCredentialRevision()
         : process.env.NODE_ENV !== "production")) &&
@@ -451,18 +481,25 @@ export async function tradeContext(tx, cid, now) {
     Number(i.expires_at) <= now ||
     i.last_error ||
     !i.registered_at ||
-    now - Number(i.last_heartbeat) > 30000
+    !recentConnectionTimestamp(i.last_heartbeat, now)
   )
     blockers.push("A fresh authenticated MT5 heartbeat is required.");
-  if (!x || x.installation_id !== i?.id || now - Number(x.received_at) > 30000)
-    blockers.push("Install the current ROCKET1000 EA and wait for fresh execution checks.");
+  const freshExecution = !!(
+    x &&
+    x.installation_id === i?.id &&
+    recentConnectionTimestamp(x.received_at, now)
+  );
+  if (!freshExecution)
+    blockers.push(
+      "Install the current ROCKET1000 EA and wait for fresh execution checks.",
+    );
   let market = null,
     execution = null;
   try {
     if (
       !m ||
       m.installation_id !== i?.id ||
-      now - Number(m.received_at) > 30000
+      !recentConnectionTimestamp(m.received_at, now)
     )
       throw Error();
     market = validateSnapshot(JSON.parse(m.payload), now);
@@ -489,11 +526,62 @@ export async function tradeContext(tx, cid, now) {
       blockers.push("A complete broker position reconciliation is required.");
     if (market) market.positions = execution.positions;
   }
-  if (execution && !execution.tradeAllowed)
+  if (freshExecution && execution && !execution.tradeAllowed) {
+    const permissions = execution.tradePermissions;
+    const denied = permissions
+      ? [
+          ["terminalAlgoTrading", "MT5 terminal Algo Trading is off."],
+          ["eaAlgoTrading", "This EA's Allow Algo Trading setting is off."],
+          [
+            "accountTrading",
+            "This MT5 login does not have account trading permission.",
+          ],
+          [
+            "accountExpertTrading",
+            "The broker account does not allow Expert Advisor trading.",
+          ],
+        ]
+          .filter(([key]) => !permissions[key])
+          .map(([, message]) => message)
+      : [];
     blockers.push(
-      "Enable this EA's Algo Trading permission in MT5 before enabling orders here.",
+      ...(denied.length
+        ? denied
+        : [
+            "Enable this EA's Algo Trading permission in MT5 before enabling orders here.",
+          ]),
     );
+  }
   const connectionBlockers = [...blockers];
+  if (process.env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1")
+    await tx.query(
+      `SELECT id FROM rocket_workspaces WHERE id=?${tx.kind === "postgres" ? " FOR UPDATE" : ""}`,
+      [c.user_id],
+    );
+  const subscription = await billingEntitlement(tx, c.user_id, {
+    now: () => now,
+  });
+  if (!subscription.allowed)
+    blockers.push(
+      subscription.reason ||
+        "An active subscription is required for new orders.",
+    );
+  if (
+    i?.account_type === "live" &&
+    process.env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1" &&
+    process.env.ROCKET_COMMERCIAL_LIVE_APPROVED !== "1"
+  ) {
+    const reason =
+      "Commercial Live execution is disabled pending operator compliance approval.";
+    blockers.push(reason);
+    connectionBlockers.push(reason);
+  }
+  if (process.env.ROCKET_RELEASE_ANALYSIS_ONLY === "1") {
+    const reason =
+      "This release is in analysis-only mode. Broker orders are disabled pending Demo acceptance.";
+    blockers.push(reason);
+    connectionBlockers.push(reason);
+  }
   if (execution && market) {
     if (
       execution.engineVersion === ENGINE_VERSION &&
@@ -603,10 +691,12 @@ export async function tradeContext(tx, cid, now) {
     automation,
     analysisEngine,
     analysisEngineActive,
-    aiModel:
-      process.env.ROCKET_OPENAI_SERVER_MANAGED === "0"
-        ? credential?.model || configuredModel()
-        : configuredModel(),
+    subscription,
+    freshExecution,
+    symbolRegistration,
+    aiModel: !openaiServerManaged()
+      ? credential?.model || configuredModel()
+      : configuredModel(),
     demoValidation: validation,
     profile,
     now,
@@ -817,7 +907,12 @@ export function orderRisk(ctx, order) {
       400,
       "Specify the chart symbol, side, stop-loss, take-profit and maximum lots.",
     );
-  if (m.positions.length > 0 || !winningAdditionAllowed(ctx, order.side))
+  const adding = m.positions.length > 0;
+  if (
+    (adding && (order.entryAction !== "ADD" || order.source !== "ai")) ||
+    (!adding && order.entryAction === "ADD") ||
+    !winningAdditionAllowed(ctx, order.side)
+  )
     throw new ApiError(
       409,
       "A position already exists on this symbol. Additions require a hedging account and verified winning positions protected at break-even. Adding to losses, averaging or offsetting positions is disabled.",
@@ -929,7 +1024,8 @@ export function orderRisk(ctx, order) {
         : Math.min(ctx.settings.riskPerTradePct, 0.25)) / 100,
     dailyLossLimit: ctx.settings.maxDailyLossPct / 100,
     aggregateLimit: (ctx.settings.maxAggregateRiskPct ?? 0.25) / 100,
-    positionLimit: ctx.settings.maxPositions,
+    positionLimit: adding ? ctx.settings.maxPositions : 1,
+    protectedAddition: adding,
     connected: true,
     mode: ctx.i.account_type,
     liveAuthorized: ctx.i.account_type === "live",
@@ -944,6 +1040,7 @@ export function orderRisk(ctx, order) {
     takeProfit: order.takeProfit,
     maxLots: order.maxLots,
     kind,
+    entryAction: adding ? "ADD" : "OPEN",
     revision: ctx.revision,
     entry,
     volume: risk.volume,
@@ -961,6 +1058,8 @@ export function orderRisk(ctx, order) {
 // START AI is the one authenticated control for either account type. A mere
 // connection, account-type label or old approval record never grants a policy.
 export async function authorizeUnifiedAutomation(tx, ctx, now) {
+  if (!ctx.subscription?.allowed && ctx.subscription)
+    throw new ApiError(402, ctx.subscription.reason, "SUBSCRIPTION_REQUIRED");
   if (!ctx.i || !ctx.x || ctx.connectionBlockers.length || ctx.unresolved)
     throw new ApiError(
       409,
@@ -1106,6 +1205,38 @@ export function tradingService(db, { now = Date.now } = {}) {
         positions: ctx.market?.positions || [],
         expiresAt: ctx.enabled ? Number(ctx.policy.expires_at) : null,
         blockers: ctx.blockers,
+        brokerSpecification:
+          ctx.freshExecution &&
+          !ctx.i?.last_error &&
+          recentConnectionTimestamp(ctx.i?.last_heartbeat, ctx.now) &&
+          ctx.symbolRegistration?.installation_id === ctx.i?.id &&
+          ctx.symbolRegistration?.session_id === ctx.x?.session_id &&
+          ctx.symbolRegistration?.account_key === ctx.consent.key &&
+          ctx.execution?.brokerSpecification?.symbol ===
+            ctx.symbolRegistration?.symbol
+            ? {
+                ...ctx.execution.brokerSpecification,
+                minimumVolume: ctx.execution.minVolume,
+                stopLevel: ctx.execution.stopLevel,
+                freezeLevel: ctx.execution.freezeLevel ?? null,
+                tradeExecutionMode: ctx.execution.tradeExecutionMode ?? null,
+                observedCommissionPerLot:
+                  ctx.execution.costsVerified === true
+                    ? (ctx.execution.commissionPerLot ?? null)
+                    : null,
+                currency:
+                  ctx.execution.account?.currency ??
+                  ctx.market?.currency ??
+                  null,
+                bid: ctx.market?.bid ?? null,
+                ask: ctx.market?.ask ?? null,
+                spreadPoints: ctx.market
+                  ? (ctx.market.ask - ctx.market.bid) / ctx.execution.point
+                  : null,
+                marketAt: ctx.market?.timestamp ?? null,
+                historyBars: ctx.market?.bars.length ?? null,
+              }
+            : null,
         account: ctx.i?.registered_at
           ? {
               login: ctx.i.account_login,
@@ -1176,6 +1307,31 @@ export function tradingService(db, { now = Date.now } = {}) {
         assertRequestedAccount(executionIdentity(ctx), input);
       if (input?.action === "settings") {
         const value = validateTradeSettings(input.settings);
+        // An old saved cap cannot silently opt in. Only an authenticated,
+        // explicit settings update can grant the separate addition policy.
+        if (
+          value.maxPositions === 2 &&
+          (ctx.i?.account_type !== "demo" ||
+            !ctx.freshExecution ||
+            ctx.i.last_error ||
+            !recentConnectionTimestamp(ctx.i.last_heartbeat, now()) ||
+            ctx.execution?.protectedAdditions !== true ||
+            ctx.execution.accountMarginMode !== 2)
+        )
+          throw new ApiError(
+            409,
+            "Protected additions require the verified Demo pilot account.",
+          );
+        if (value.maxPositions === 2)
+          await tx.query(
+            "INSERT INTO rocket_protected_additions(connection_id,account_login,broker_server,enabled) VALUES(?,?,?,1) ON CONFLICT(connection_id) DO UPDATE SET account_login=excluded.account_login,broker_server=excluded.broker_server",
+            [cid, ctx.i.account_login, ctx.i.broker_server],
+          );
+        else
+          await tx.query(
+            "DELETE FROM rocket_protected_additions WHERE connection_id=?",
+            [cid],
+          );
         await disableTrading(tx, cid, now());
         await tx.query(
           "UPDATE rocket_direct_connections SET stopped=1 WHERE id=?",
@@ -1345,8 +1501,8 @@ export function tradingService(db, { now = Date.now } = {}) {
           if (input.order?.side || kind !== "OPEN" || !ctx.enabled)
             orderRisk(ctx, input.order);
           const [latest] = await tx.query(
-            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
-            [cid, ctx.i.id],
+            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND account_key=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+            [cid, ctx.i.id, ctx.consent.key],
           );
           const a = latest?.result ? JSON.parse(latest.result) : null;
           if (!a)
@@ -1358,6 +1514,7 @@ export function tradingService(db, { now = Date.now } = {}) {
           if (kind === "OPEN") {
             intent = {
               kind: "OPEN",
+              entryAction: a.entryAction,
               side: a.decision,
               symbol: a.symbol,
               stop: a.stopLoss,
@@ -1653,8 +1810,8 @@ async function verifyAiCommand(
   let assessment = null;
   if (analysisId) {
     const [row] = await tx.query(
-      "SELECT result FROM rocket_analyses WHERE id=? AND connection_id=? AND installation_id=? AND status='completed'",
-      [analysisId, ctx.c.id, ctx.i.id],
+      "SELECT result FROM rocket_analyses WHERE id=? AND connection_id=? AND installation_id=? AND account_key=? AND status='completed'",
+      [analysisId, ctx.c.id, ctx.i.id, ctx.consent.key],
     );
     assessment = row?.result ? JSON.parse(row.result) : null;
     if (
@@ -1728,9 +1885,10 @@ async function verifyAiCommand(
       !Number.isFinite(assessment.proposedLots) ||
       assessment.proposedLots <= 0 ||
       order.maxLots > assessment.proposedLots + 1e-8 ||
-      (ctx.market.positions.some((p) => p.symbol === ctx.market.symbol)
-        ? assessment.entryAction !== "ADD"
-        : assessment.entryAction !== "OPEN") ||
+      assessment.entryAction !==
+        (ctx.market.positions.length ? "ADD" : "OPEN") ||
+      (order.entryAction !== undefined &&
+        order.entryAction !== assessment.entryAction) ||
       Math.abs(order.stop - assessment.stopLoss) >
         ctx.execution.tickSize + 1e-8 ||
       Math.abs(order.takeProfit - assessment.takeProfit) >
@@ -1938,6 +2096,14 @@ export async function executionExchange(
         );
       if (ack.filledVolume + epsilon < requested.volume)
         acknowledgedStatus = "partial";
+      // Older EA callbacks could report a partial while the order remainder
+      // was still working. Keep the command fenced until a capable EA has
+      // reconciled the final broker order state and total filled volume.
+      if (
+        acknowledgedStatus === "partial" &&
+        !(reconciled && x.finalPartialReconciliation === true)
+      )
+        acknowledgedStatus = "uncertain";
     }
     await tx.query(
       "UPDATE rocket_trade_commands SET status=?,result=? WHERE id=? AND connection_id=? AND installation_id=? AND session_id=? AND lease_hash=? AND status IN ('claimed','sending','uncertain') AND id IN (SELECT command_id FROM rocket_command_accounts WHERE account_key=?)",
@@ -1994,7 +2160,10 @@ export async function executionExchange(
       ) || ctx.settings.riskPerTradePct,
     maxDailyLossPct: ctx.settings.maxDailyLossPct,
     maxDrawdownPct: ctx.settings.maxDrawdownPct,
-    maxPositions: ctx.settings.maxPositions,
+    maxPositions:
+      order.entryAction === "ADD" && ctx.execution?.protectedAdditions === true
+        ? ctx.settings.maxPositions
+        : 1,
     aggregateRiskPct: ctx.settings.maxAggregateRiskPct ?? 0.25,
     minRewardRisk: 1.5,
   });
@@ -2059,6 +2228,7 @@ export async function executionExchange(
   const wakeAutomation =
     input.eaProtocol === 4 &&
     ctx.permissionActive &&
+    ctx.subscription.allowed &&
     ctx.automation?.state === "running";
   if (input.eaProtocol === 4 && ctx.unresolved) {
     const [old] = await tx.query(

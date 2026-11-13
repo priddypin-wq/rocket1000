@@ -1,4 +1,5 @@
 import { dashboardRequest, jsonInput } from "../../../../server/http.mjs";
+import { ApiError } from "../../../../server/errors.mjs";
 export const runtime = "nodejs";
 export const POST = (req: Request) =>
   dashboardRequest(
@@ -9,8 +10,16 @@ export const POST = (req: Request) =>
       >,
       uid: string,
     ) => {
-      const { connectionId } = await jsonInput(req);
-      await service.revoke(uid, connectionId);
-      return { ok: true };
+      const input = await jsonInput(req);
+      if (typeof input?.expectedInstallationId !== "string")
+        throw new ApiError(
+          400,
+          "Review the current installation before revoking access.",
+        );
+      return service.revoke(
+        uid,
+        input.connectionId,
+        input.expectedInstallationId,
+      );
     },
   );

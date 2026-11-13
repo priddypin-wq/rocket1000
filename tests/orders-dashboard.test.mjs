@@ -507,11 +507,12 @@ test("valid WAIT is informational only; stale, wrong-symbol and wrong-engine ana
     };
     const id = randomUUID();
     await f.db.query(
-      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,result) VALUES(?,?,?,?,?,?,?)",
       [
         id,
         f.id,
         f.token.split(".")[1],
+        state.accountKey,
         "completed",
         f.now(),
         JSON.stringify(value),
@@ -576,11 +577,12 @@ test("server-configured alternative model proposals remain visible; other models
     };
     const id = randomUUID();
     await f.db.query(
-      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,result) VALUES(?,?,?,?,?,?,?)",
       [
         id,
         f.id,
         f.token.split(".")[1],
+        state.accountKey,
         "completed",
         f.now(),
         JSON.stringify(value),
@@ -673,11 +675,12 @@ test("proposal readiness uses deterministic risk checks and stays separate from 
     };
     const id = randomUUID();
     await f.db.query(
-      "INSERT INTO rocket_analyses(id,connection_id,installation_id,status,created_at,result) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO rocket_analyses(id,connection_id,installation_id,account_key,status,created_at,result) VALUES(?,?,?,?,?,?,?)",
       [
         id,
         f.id,
         f.token.split(".")[1],
+        state.accountKey,
         "completed",
         f.now(),
         JSON.stringify(a),

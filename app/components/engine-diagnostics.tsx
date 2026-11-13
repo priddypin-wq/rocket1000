@@ -29,6 +29,57 @@ type LiveReview = {
   settingsRevision: string;
 };
 
+const sessionDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const executionModes = ["Request", "Instant", "Market", "Exchange"];
+const sessionTime = (seconds: number) =>
+  `${String(Math.floor(seconds / 3600)).padStart(2, "0")}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}`;
+
+function BrokerSpecification({
+  data,
+}: {
+  data: NonNullable<AutoState["brokerSpecification"]>;
+}) {
+  return (
+    <>
+      <p>
+        {data.symbol} · Bid {brokerNumber(data.bid)} / Ask{" "}
+        {brokerNumber(data.ask)} · Spread {brokerNumber(data.spreadPoints, 1)}{" "}
+        points · {brokerTime(data.marketAt)}
+      </p>
+      <p>
+        Minimum lot {brokerNumber(data.minimumVolume, 8)} · Estimated
+        minimum-lot margin BUY {brokerNumber(data.minimumBuyMargin, 2)} / SELL{" "}
+        {brokerNumber(data.minimumSellMargin, 2)} {data.currency}
+      </p>
+      <p>
+        Execution{" "}
+        {data.tradeExecutionMode === null
+          ? "Unavailable"
+          : executionModes[data.tradeExecutionMode] || "Unrecognized"}{" "}
+        · Stop / freeze distance {data.stopLevel} /{" "}
+        {brokerNumber(data.freezeLevel, 0)} points · M5 closed bars{" "}
+        {brokerNumber(data.historyBars, 0)}
+      </p>
+      <p>
+        Observed round-trip commission and fees per lot{" "}
+        {brokerNumber(data.observedCommissionPerLot, 2)} {data.currency} ·{" "}
+        {data.swap
+          ? `Broker swap (MT5 mode ${data.swap.mode}): long ${data.swap.long}, short ${data.swap.short}`
+          : "Swap unavailable"}
+      </p>
+      <p>
+        Sessions (broker time){" "}
+        {data.sessions
+          ?.map(
+            ([day, start, end, full]) =>
+              `${sessionDays[day]} ${full ? "all day" : `${sessionTime(start)}–${sessionTime(end)}`}`,
+          )
+          .join(", ") || "Unavailable"}
+      </p>
+    </>
+  );
+}
+
 export default function EngineDiagnostics() {
   const engine = useAnalysisEngine();
   const orders = useOrders();
@@ -306,6 +357,11 @@ export default function EngineDiagnostics() {
           <span>Free margin</span>
           <b>{brokerNumber(orders.data?.account?.freeMargin, 2)}</b>
         </div>
+        {!error &&
+        orders.data?.connection?.fresh &&
+        data?.brokerSpecification ? (
+          <BrokerSpecification data={data.brokerSpecification} />
+        ) : null}
         <div className="inner-kv">
           <span>Daily loss / drawdown</span>
           <b>

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { unzipSync, strFromU8 } from "fflate";
 import { openDatabase, migrateConnections } from "../server/database.mjs";
 import {
@@ -110,9 +111,28 @@ test("only an explicit reviewed replacement rotates a valid installation", async
       first = config(await service.download("alice", id));
     const ordinary = config(await service.download("alice", id));
     assert.equal(ordinary.credential, first.credential);
-    const replaced = config(
-      await service.download("alice", id, { replaceCredential: true }),
+    const replacement = {
+      replaceCredential: true,
+      expectedInstallationId: first.installation_id,
+      requestId: randomUUID(),
+    };
+    const [firstResult, retryResult] = await Promise.all([
+      service.download("alice", id, replacement),
+      service.download("alice", id, replacement),
+    ]);
+    const replaced = config(firstResult);
+    assert.equal(config(retryResult).credential, replaced.credential);
+    assert.equal(config(retryResult).installation_id, replaced.installation_id);
+    await assert.rejects(
+      service.download("alice", id, {
+        ...replacement,
+        requestId: randomUUID(),
+      }),
+      { code: "EA_INSTALLATION_CHANGED" },
     );
+    await assert.rejects(service.revoke("alice", id, first.installation_id), {
+      code: "EA_INSTALLATION_CHANGED",
+    });
     assert.notEqual(replaced.credential, first.credential);
     await assert.rejects(
       service.telemetry(first.credential, telemetry, true),

@@ -260,7 +260,7 @@ export default function TradeControls({
             <span>Drawdown limit</span>
           </div>
           <div>
-            <strong>{Math.min(1, data?.settings.maxPositions ?? 1)}</strong>
+            <strong>{data?.settings.maxPositions ?? 1}</strong>
             <span>Maximum positions</span>
           </div>
         </div>

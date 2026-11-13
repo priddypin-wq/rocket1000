@@ -5,6 +5,7 @@ import {
   aiConfiguration,
   createAiResponse,
   isConfiguredModel,
+  openaiRequestScope,
 } from "./ai-provider.mjs";
 
 const TEST_INTERVAL = 60000;
@@ -17,6 +18,18 @@ const errors = {
     "AI authentication was rejected. Check the server-side API credential.",
   AI_BILLING_REQUIRED:
     "AI credits or a billing limit need attention in the active provider account.",
+  AI_CREDITS_EXHAUSTED:
+    "The OpenAI organization has no prepaid credits left. Add credits in its API billing settings.",
+  AI_PROJECT_SPEND_LIMIT:
+    "The OpenAI project reached its spend limit. Review that project's billing settings.",
+  AI_ORG_SPEND_LIMIT:
+    "The OpenAI organization reached its spend limit. Review that organization's billing settings.",
+  AI_ORG_USAGE_LIMIT:
+    "The OpenAI organization reached its approved usage limit. Review its usage tier and limits.",
+  AI_SERVICE_TIER_UNAVAILABLE:
+    "The OpenAI project does not allow the current service tier. Review the project's allowed tiers.",
+  AI_PROJECT_CONFIGURATION_INVALID:
+    "The server's OpenAI organization or project setting is invalid.",
   AI_ACCESS_REQUIRED:
     "The AI account does not have permission to use the selected model.",
   AI_MODEL_UNAVAILABLE:
@@ -35,6 +48,14 @@ const errors = {
     "The AI configuration changed during the test. Run a new connection test.",
   AI_BUDGET_REACHED:
     "The backend AI usage budget is reached. New paid requests are suspended.",
+  SUBSCRIPTION_REQUIRED:
+    "An active subscription is required for paid AI requests.",
+  AI_SUBSCRIPTION_ALLOWANCE_REACHED:
+    "The AI allowance for this subscription period is exhausted.",
+  AI_PLATFORM_BUDGET_REACHED:
+    "The platform AI budget has been reached for this UTC day.",
+  AI_PLATFORM_BUDGET_REQUIRED:
+    "The operator must configure a valid platform AI budget.",
   AI_USAGE_UNVERIFIED:
     "The provider did not return verifiable usage. New paid requests are suspended.",
   AI_PRICING_REQUIRED:
@@ -61,8 +82,11 @@ function fingerprint(env, config) {
         (env.VERCEL_PROJECT_ID && env.VERCEL_TEAM_ID
           ? `oidc:${env.VERCEL_PROJECT_ID}:${env.VERCEL_TEAM_ID}`
           : env.VERCEL_OIDC_TOKEN);
+  const scope = config.provider === "OpenAI" ? openaiRequestScope(env) : null;
   return createHash("sha256")
-    .update(`${config.provider}\0${config.model}\0${credential || ""}`)
+    .update(
+      JSON.stringify([config.provider, config.model, credential || "", scope]),
+    )
     .digest("hex");
 }
 

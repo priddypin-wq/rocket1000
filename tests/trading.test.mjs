@@ -6,6 +6,7 @@ import {
   terminal,
   approveFixtureLive,
   seedAiEntryFixture,
+  seedSubscription,
 } from "./helpers.mjs";
 import {
   tradingService,
@@ -98,6 +99,43 @@ async function setup(type = "demo", { qualified = false } = {}) {
     trade.act("alice", { action: "confirm", previewId: id });
   return { ...f, trade, send, input, enable, preview, confirm };
 }
+test("subscription expiry between EA claim and final authorization blocks a new broker entry", async () => {
+  const f = await setup();
+  const previous = process.env.ROCKET_SUBSCRIPTIONS_REQUIRED;
+  try {
+    await seedSubscription(f.db, "alice", f.now(), {
+      expiresAt: f.now() + 1000,
+    });
+    process.env.ROCKET_SUBSCRIPTIONS_REQUIRED = "1";
+    await f.enable();
+    const review = await f.preview();
+    await f.confirm(review.id);
+    const claimed = await f.send();
+    assert.equal(claimed.command, "TRADE");
+    f.advance(1500);
+    await assert.rejects(
+      f.send(
+        { authorization: { id: claimed.orderId, lease: claimed.lease } },
+        false,
+        { authorize: true },
+      ),
+      /subscription/,
+    );
+    const status = await f.trade.status("alice");
+    assert.equal(status.permissionActive, true);
+    assert.equal(status.enabled, false);
+    const [command] = await f.db.query(
+      "SELECT status FROM rocket_trade_commands WHERE id=?",
+      [claimed.orderId],
+    );
+    assert.equal(command.status, "claimed");
+  } finally {
+    if (previous === undefined)
+      delete process.env.ROCKET_SUBSCRIPTIONS_REQUIRED;
+    else process.env.ROCKET_SUBSCRIPTIONS_REQUIRED = previous;
+    await f.db.close();
+  }
+});
 test("broker metadata rejects missing, negative and non-finite values and strips extra secrets", () => {
   for (const patch of [
     { tickValue: 0 },
@@ -195,6 +233,69 @@ test("another browser workspace cannot enable, review, confirm or inspect this a
     assert.equal((await f.trade.status("bob")).account, null);
     assert.equal((await f.trade.status("bob")).orders.length, 0);
   } finally {
+    await f.db.close();
+  }
+});
+
+test("an in-flight partial fill stays unresolved until broker reconciliation confirms the final volume", async () => {
+  const f = await setup();
+  try {
+    await f.enable();
+    await f.confirm((await f.preview()).id);
+    const command = await f.send();
+    const authorized = await f.send(
+      { authorization: { id: command.orderId, lease: command.lease } },
+      false,
+      { authorize: true },
+    );
+    assert.equal(authorized.command, "AUTHORIZED");
+    const fill = {
+      id: command.orderId,
+      lease: command.lease,
+      status: "partial",
+      retcode: 10010,
+      deal: "111",
+      order: "222",
+      filledPrice: command.entry,
+      filledVolume: command.volume / 2,
+    };
+    const pending = await f.send({ orderResult: fill });
+    assert.equal(pending.command, "RECONCILE");
+    assert.equal(pending.tradingEnabled, false);
+    assert.equal((await f.trade.status("alice")).orders[0].status, "uncertain");
+    await f.send({
+      execution: { ...execution, finalPartialReconciliation: true },
+      orderResult: {
+        ...fill,
+        lease: pending.lease,
+        retcode: 0,
+        reconciled: true,
+        evidence: "broker-history",
+      },
+    });
+    const [result] = (await f.trade.status("alice")).orders;
+    assert.equal(result.status, "partial");
+    assert.equal(result.result.filledVolume, command.volume / 2);
+    assert.equal(result.result.reconciled, true);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("release analysis-only mode blocks an existing queued broker command and new enable requests", async () => {
+  const f = await setup();
+  const previous = process.env.ROCKET_RELEASE_ANALYSIS_ONLY;
+  try {
+    await f.enable();
+    await f.confirm((await f.preview()).id);
+    process.env.ROCKET_RELEASE_ANALYSIS_ONLY = "1";
+    const beat = await f.send();
+    assert.equal(beat.tradingEnabled, false);
+    assert.equal(beat.command, "NONE");
+    await assert.rejects(f.enable(), /analysis-only mode/);
+  } finally {
+    if (previous === undefined) delete process.env.ROCKET_RELEASE_ANALYSIS_ONLY;
+    else process.env.ROCKET_RELEASE_ANALYSIS_ONLY = previous;
     await f.db.close();
   }
 });

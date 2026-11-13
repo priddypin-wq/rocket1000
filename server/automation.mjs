@@ -6,6 +6,7 @@ import { tradeContext, enqueueCommand, disableTrading } from "./trading.mjs";
 import { decisionBar } from "./market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
+import { winningAdditionAllowed } from "./winning-additions.mjs";
 
 export function automaticIntent(ctx, decision) {
   const { market: m, execution: e, settings: s } = ctx;
@@ -60,8 +61,8 @@ export function automaticIntent(ctx, decision) {
   }
   if (
     !["BUY", "SELL"].includes(decision.decision) ||
-    m.positions.length ||
-    decision.entryAction !== "OPEN" ||
+    decision.entryAction !== (m.positions.length ? "ADD" : "OPEN") ||
+    !winningAdditionAllowed(ctx, decision.decision) ||
     !Number.isFinite(decision.proposedLots) ||
     decision.proposedLots <= 0 ||
     !ctx.enabled ||
@@ -100,6 +101,7 @@ export function automaticIntent(ctx, decision) {
     return null;
   return {
     kind: "OPEN",
+    entryAction: decision.entryAction,
     side,
     symbol: m.symbol,
     stop: Number(stop.toFixed(10)),
@@ -146,7 +148,7 @@ export function automationService(
           );
           return { state: "stopped" };
         }
-        if (!ctx.permissionActive) return { state: "stopped" };
+        if (!ctx.permissionActive || !ctx.subscription.allowed) return { state: "stopped" };
         const m = ctx.market,
           e = ctx.execution,
           s = ctx.settings,
@@ -182,8 +184,8 @@ export function automationService(
         let decision = saved ? JSON.parse(saved.result) : null;
         if (!decision && analyzer === analyzeMarket) {
           const [latest] = await tx.query(
-            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
-            [ctx.c.id, installationId],
+            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND account_key=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+            [ctx.c.id, installationId, ctx.consent.key],
           );
           const result = latest?.result
             ? { ...JSON.parse(latest.result), id: latest.id }
@@ -259,8 +261,8 @@ export function automationService(
           // Production only consumes the durable worker's budgeted assessment.
           // EA heartbeats never launch a second, unmetered provider request.
           const [completed] = await tx.query(
-            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
-            [ctx.c.id, installationId],
+            "SELECT id,result FROM rocket_analyses WHERE connection_id=? AND installation_id=? AND account_key=? AND status='completed' ORDER BY created_at DESC LIMIT 1",
+            [ctx.c.id, installationId, ctx.consent.key],
           );
           const latest = completed?.result
             ? JSON.parse(completed.result)

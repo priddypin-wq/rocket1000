@@ -81,7 +81,7 @@ test("lower configurable aggregate capacity constrains volume without raising ha
   );
   for (const patch of [
     { maxAggregateRiskPct: 0.251 },
-    { maxPositions: 2 },
+    { maxPositions: 3 },
     { riskPerTradePct: 0.251 },
     { maxDailyLossPct: 1.01 },
     { maxDrawdownPct: 5.01 },

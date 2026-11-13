@@ -257,7 +257,7 @@ test("lower operator risk policies constrain adaptation and invalid hard ceiling
     { maxAggregateRiskPct: 0.251 },
     { maxDailyLossPct: 1.001 },
     { maxDrawdownPct: 5.001 },
-    { maxPositions: 2 },
+    { maxPositions: 3 },
   ])
     assert.throws(() => validateTradeSettings(patch));
 });

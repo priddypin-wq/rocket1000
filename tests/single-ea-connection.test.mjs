@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { strFromU8, unzipSync } from "fflate";
 import { fixture, market, terminal as account } from "./helpers.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
+import { tradingService } from "../server/trading.mjs";
 import {
   bindEaConnection,
   eaConnectionBindingSchema,
@@ -405,7 +406,11 @@ test("replacement connection accepts its new terminal while revoked credentials 
     const input = completeReport(f.now());
     await f.service.telemetry(f.token, input, true);
     const files = unzipSync(
-      await f.service.download("alice", f.id, { replaceCredential: true }),
+      await f.service.download("alice", f.id, {
+        replaceCredential: true,
+        expectedInstallationId: f.token.split(".")[1],
+        requestId: randomUUID(),
+      }),
     );
     const replacementToken = strFromU8(
       files["MQL5/Files/ROCKET1000/rocket1000.config"],
@@ -436,6 +441,146 @@ test("replacement connection accepts its new terminal while revoked credentials 
     assert.equal(accepted.ok, true);
     assert.equal(accepted.command, "NONE");
     assert.equal((await f.service.list("alice"))[0].status, "Connected");
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("only the bound session can invalidate its quotes and reconnect with fresh data", async () => {
+  const f = await fixture();
+  try {
+    const input = completeReport(f.now());
+    await f.service.telemetry(f.token, input, true);
+    const readMarket = () =>
+      f.db.query(
+        "SELECT payload FROM rocket_market_snapshots WHERE connection_id=?",
+        [f.id],
+      );
+    assert.equal((await readMarket()).length, 1);
+    const { market: initialMarket, ...heartbeat } = input;
+    await f.service.telemetry(
+      f.token,
+      { ...heartbeat, marketUnavailable: true },
+      false,
+    );
+    assert.deepEqual(await readMarket(), []);
+    assert.equal((await f.service.list("alice"))[0].status, "Connected");
+    await f.service.telemetry(f.token, input, false);
+    assert.equal((await readMarket()).length, 1);
+    await assert.rejects(
+      f.service.telemetry(
+        f.token,
+        {
+          ...heartbeat,
+          brokerConnected: false,
+          execution: { terminalId: input.execution.terminalId },
+        },
+        false,
+      ),
+      { code: "BROKER_DISCONNECTED" },
+    );
+    assert.deepEqual(await readMarket(), []);
+    assert.equal((await f.service.list("alice"))[0].status, "Disconnected");
+    const reconnected = await f.service.telemetry(
+      f.token,
+      {
+        ...input,
+        market: initialMarket,
+        terminalSession: "bbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+      true,
+    );
+    assert.equal(reconnected.tradingEnabled, false);
+    assert.equal(reconnected.command, "NONE");
+    assert.equal((await f.service.list("alice"))[0].status, "Connected");
+    assert.equal((await readMarket()).length, 1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("broker diagnostics are bound to fresh telemetry from the exact chart and cannot grant permission", async () => {
+  const f = await fixture();
+  try {
+    const input = completeReport(f.now());
+    input.execution = {
+      ...input.execution,
+      tradeAllowed: true,
+      tradePermissions: {
+        terminalAlgoTrading: true,
+        eaAlgoTrading: false,
+        accountTrading: true,
+        accountExpertTrading: true,
+      },
+      brokerSpecification: {
+        symbol: input.chartSymbol,
+        sessions: [[1, 3600, 82800, false]],
+        swap: { mode: 1, long: -2, short: 0.5 },
+        minimumBuyMargin: 2.35,
+        minimumSellMargin: null,
+      },
+    };
+    const accepted = await f.service.telemetry(f.token, input, true);
+    assert.equal(accepted.command, "NONE");
+    assert.equal(accepted.tradingEnabled, false);
+    const status = () => tradingService(f.db, { now: f.now }).status("alice");
+    const fresh = await status();
+    assert.ok(
+      fresh.connectionBlockers.includes(
+        "This EA's Allow Algo Trading setting is off.",
+      ),
+    );
+    assert.equal(fresh.brokerSpecification.symbol, input.chartSymbol);
+    assert.equal(fresh.brokerSpecification.minimumBuyMargin, 2.35);
+    assert.equal(fresh.brokerSpecification.minimumSellMargin, null);
+    assert.equal(
+      fresh.brokerSpecification.minimumVolume,
+      input.execution.minVolume,
+    );
+    assert.equal(
+      fresh.brokerSpecification.historyBars,
+      input.market.bars.length,
+    );
+    assert.equal(fresh.brokerSpecification.bid, input.market.bid);
+    assert.deepEqual(fresh.brokerSpecification.sessions, [
+      [1, 3600, 82800, false],
+    ]);
+    await assert.rejects(
+      f.service.telemetry(
+        f.token,
+        {
+          ...input,
+          execution: {
+            ...input.execution,
+            brokerSpecification: {
+              ...input.execution.brokerSpecification,
+              symbol: "OTHER",
+            },
+          },
+        },
+        false,
+      ),
+      { status: 422 },
+    );
+    await assert.rejects(
+      f.service.telemetry(
+        f.token,
+        {
+          ...input,
+          execution: {
+            ...input.execution,
+            brokerSpecification: {
+              ...input.execution.brokerSpecification,
+              minimumBuyMargin: -1,
+            },
+          },
+        },
+        false,
+      ),
+      { status: 422 },
+    );
+    f.advance(30001);
+    assert.equal((await status()).brokerSpecification, null);
   } finally {
     await f.db.close();
   }

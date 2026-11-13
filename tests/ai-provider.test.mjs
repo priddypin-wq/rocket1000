@@ -113,6 +113,10 @@ for (const [status, providerCode, expected] of [
   [403, "permission_denied", "AI_ACCESS_REQUIRED"],
   [404, "model_not_found", "AI_MODEL_UNAVAILABLE"],
   [429, "insufficient_quota", "AI_BILLING_REQUIRED"],
+  [429, "credit_balance_exhausted", "AI_CREDITS_EXHAUSTED"],
+  [429, "project_spend_limit_exceeded", "AI_PROJECT_SPEND_LIMIT"],
+  [429, "organization_spend_limit_exceeded", "AI_ORG_SPEND_LIMIT"],
+  [429, "organization_usage_limit_exceeded", "AI_ORG_USAGE_LIMIT"],
   [429, "rate_limit_exceeded", "AI_RATE_LIMITED"],
   [500, "server_error", "AI_UNAVAILABLE"],
 ]) {
@@ -153,6 +157,34 @@ for (const [status, providerCode, expected] of [
     assert.equal(calls, 1);
   });
 }
+
+test("explicit server project routing is validated and sent only to the OpenAI host", async () => {
+  const configured = {
+    ...env,
+    OPENAI_ORG_ID: "org-fixture",
+    OPENAI_PROJECT_ID: "proj_fixture",
+  };
+  await createAiResponse(request, {
+    env: configured,
+    fetcher: async (url, options) => {
+      const headers = new Headers(options.headers);
+      assert.equal(new URL(url).hostname, "api.openai.com");
+      assert.equal(
+        headers.get("openai-organization"),
+        configured.OPENAI_ORG_ID,
+      );
+      assert.equal(headers.get("openai-project"), configured.OPENAI_PROJECT_ID);
+      return Response.json(completed);
+    },
+  });
+  await assert.rejects(
+    createAiResponse(request, {
+      env: { ...configured, OPENAI_PROJECT_ID: "invalid project" },
+      fetcher: () => assert.fail("Invalid scope must never reach OpenAI"),
+    }),
+    { code: "AI_PROJECT_CONFIGURATION_INVALID" },
+  );
+});
 
 test("SDK logging stays disabled even if its environment requests debug logging", async () => {
   const originalLog = process.env.OPENAI_LOG;

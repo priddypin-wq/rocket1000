@@ -2,14 +2,19 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mt5Api } from "../../lib/mt5-client";
-import { verifiedConnectionResponse } from "../../lib/action-confirmation.mjs";
-import { requestBrowserDownload } from "../../lib/browser-download.mjs";
+import {
+  confirmedRevocation,
+  verifiedConnectionResponse,
+} from "../../lib/action-confirmation.mjs";
+import { requestEaDownload } from "../../lib/browser-download.mjs";
+import { ENGINE_VERSION } from "../../lib/engine-version.mjs";
 import { brokerNumber, useOrders } from "../../lib/use-orders";
 import { ConnectedSymbols } from "./trading-dashboard";
 type Connection = {
   id: string;
   status: string;
   installation: null | {
+    id: string;
     accountLogin: string | null;
     brokerServer: string | null;
     accountType: "demo" | "live" | null;
@@ -38,6 +43,23 @@ export default function Mt5Connection() {
     "package" | "source" | null
   >(null);
   const replacementDialog = useRef<HTMLDialogElement>(null);
+  const replacementReview = useRef<{
+    installationId: string;
+    requestId: string;
+  } | null>(null);
+  function reviewReplacement(format: "package" | "source") {
+    if (c?.installation?.id) {
+      replacementReview.current = {
+        installationId: c.installation.id,
+        requestId: crypto.randomUUID(),
+      };
+      setReplacementFormat(format);
+    }
+  }
+  function dismissReplacement() {
+    replacementReview.current = null;
+    setReplacementFormat(null);
+  }
   useEffect(() => {
     if (replacementFormat) replacementDialog.current?.showModal();
     else replacementDialog.current?.close();
@@ -150,11 +172,23 @@ export default function Mt5Connection() {
     actionInFlight.current = true;
     setBusy("copy");
     try {
-      await navigator.clipboard.writeText(state.serverUrl);
+      const verified = verifiedConnectionResponse(
+        await (await mt5Api("generate", {})).json(),
+        c?.id,
+      );
+      if (verified.installationId !== (c?.installation?.id ?? null))
+        throw Error(
+          "The EA installation changed. Check its status before copying the URL.",
+        );
+      await navigator.clipboard.writeText(verified.serverUrl).catch(() => {
+        throw Error(
+          "Clipboard permission is unavailable. Select the displayed URL to copy it.",
+        );
+      });
       setNotice("MT5 URL copied. Paste it into the allowed WebRequest URLs.");
-    } catch {
+    } catch (e) {
       setError(
-        "Clipboard permission is unavailable. Select the displayed URL to copy it.",
+        e instanceof Error ? e.message : "Could not copy the verified MT5 URL.",
       );
     } finally {
       actionInFlight.current = false;
@@ -182,16 +216,36 @@ export default function Mt5Connection() {
         await (await mt5Api("generate", {})).json(),
         c?.id,
       );
+      const review = replaceCredential ? replacementReview.current : null;
+      if (replaceCredential && !review)
+        throw Error("Review the current EA installation before replacing it.");
+      if (!review && generated.installationId !== (c?.installation?.id ?? null))
+        throw Error(
+          "The EA installation changed. Refresh its status before downloading.",
+        );
       const response = await mt5Api("download", {
         connectionId: generated.connectionId,
         format,
-        ...(replaceCredential ? { replaceCredential: true } : {}),
+        expectedInstallationId:
+          review?.installationId ?? generated.installationId,
+        ...(review
+          ? { replaceCredential: true, requestId: review.requestId }
+          : {}),
       });
-      await requestBrowserDownload(response, {
-        filename: `ROCKET1000_EA.${format === "source" ? "mq5" : "zip"}`,
-        contentTypes: [format === "source" ? "text/x-mql5" : "application/zip"],
+      await requestEaDownload(response, {
+        connectionId: generated.connectionId,
+        installationId:
+          review?.installationId ??
+          (c?.installation &&
+          !c.installation.revokedAt &&
+          c.installation.expiresAt > generated.verifiedAt
+            ? c.installation.id
+            : null),
+        replacing: replaceCredential,
+        format,
+        engineVersion: ENGINE_VERSION,
       });
-      setReplacementFormat(null);
+      dismissReplacement();
       setNotice(
         format === "source"
           ? "MetaEditor source download requested. Open the saved ROCKET1000_EA.mq5 in MetaEditor, save it in your MT5 MQL5/Experts/ROCKET1000 folder and compile. Its connection configuration is included."
@@ -204,7 +258,7 @@ export default function Mt5Connection() {
         e instanceof Error &&
         (e as Error & { code?: string }).code === "EA_ROTATION_REVIEW_REQUIRED"
       )
-        setReplacementFormat(format);
+        reviewReplacement(format);
     } finally {
       actionInFlight.current = false;
       setBusy("");
@@ -223,10 +277,29 @@ export default function Mt5Connection() {
     setBusy("revoke");
     try {
       const revoked = await (
-        await mt5Api("revoke", { connectionId: c.id })
+        await mt5Api("revoke", {
+          connectionId: c.id,
+          expectedInstallationId: c.installation.id,
+        })
       ).json();
-      if (revoked?.ok !== true)
-        throw Error("The server did not confirm EA credential revocation.");
+      const revokedAt = confirmedRevocation(revoked, c.id, c.installation.id);
+      setState((previous) =>
+        previous
+          ? {
+              ...previous,
+              connections: previous.connections.map((connection) =>
+                connection.id === c.id &&
+                connection.installation?.id === c.installation?.id
+                  ? {
+                      ...connection,
+                      status: "Authentication Failed",
+                      installation: { ...connection.installation!, revokedAt },
+                    }
+                  : connection,
+              ),
+            }
+          : previous,
+      );
       setNotice("EA credential revoked.");
       await refreshAfterAction();
     } catch (e) {
@@ -327,7 +400,7 @@ export default function Mt5Connection() {
             <button
               className="inner-text-button"
               disabled={!!busy}
-              onClick={() => setReplacementFormat("package")}
+              onClick={() => reviewReplacement("package")}
             >
               Replace EA installation…
             </button>
@@ -422,9 +495,9 @@ export default function Mt5Connection() {
         aria-describedby="replace-ea-description"
         onCancel={(event) => {
           if (actionInFlight.current) event.preventDefault();
-          else setReplacementFormat(null);
+          else dismissReplacement();
         }}
-        onClose={() => setReplacementFormat(null)}
+        onClose={dismissReplacement}
       >
         <h2 id="replace-ea-title">Replace this EA installation?</h2>
         <p id="replace-ea-description">
@@ -440,7 +513,7 @@ export default function Mt5Connection() {
           <button
             className="action-outline"
             disabled={!!busy}
-            onClick={() => setReplacementFormat(null)}
+            onClick={dismissReplacement}
           >
             Cancel
           </button>
