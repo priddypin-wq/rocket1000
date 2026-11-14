@@ -1,0 +1,41 @@
+name: Verify ROCKET1000 repairs
+on:
+  pull_request:
+    branches:
+      - main
+      - codex/professional-auto-trading-upgrade
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # No production credentials or live broker access in CI.
+      OPENAI_API_KEY: ""
+      AI_GATEWAY_API_KEY: ""
+      VERCEL_OIDC_TOKEN: ""
+      DATABASE_URL: ""
+      ROCKET_DISABLE_LIVE_ORDERS: "1"
+    steps:
+      - name: Checkout proposed changes
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.16.0"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Unit and service regression tests
+        run: npm test
+      - name: TypeScript check
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npm run lint
+      - name: Next production build
+        run: npm run build
+      - name: Isolated HTTP integration tests
+        run: npm run test:http
