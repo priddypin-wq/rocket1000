@@ -395,9 +395,13 @@ test("the settings panel defaults to server status and model without browser key
       },
     }).default;
     const html = renderToStaticMarkup(React.createElement(component));
-    assert.match(html, /Server managed/);
-    assert.match(html, /Test Connection/);
-    assert.match(html, /Model:/);
+    if (metadata) {
+      assert.match(html, /Server managed/);
+      assert.match(html, /Test Connection/);
+      assert.match(html, /Model:/);
+    } else {
+      assert.match(html, /Checking…/);
+    }
     assert.doesNotMatch(
       html,
       /<input|Save API Key|Replace API Key|Remove API Key/,

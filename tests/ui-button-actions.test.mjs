@@ -803,3 +803,73 @@ test("notification toggles retain both rapid clicks and persist only non-secret 
     b.close();
   }
 });
+
+test("MT5 model picker saves the selection with a pasted key and tests that revision exactly once", async () => {
+  const b = browser();
+  try {
+    const initial = {
+      serverManaged: false,
+      configured: false,
+      stored: false,
+      encryptionReady: true,
+      model: "gpt-6.1-sol",
+      models: ["gpt-6.2-astra", "gpt-6.2-sol"],
+    };
+    const saved = {
+      ...initial,
+      configured: true,
+      stored: true,
+      model: "gpt-6.2-astra",
+      revision: "0a0b0c0d-aaaa-4321-bbbb-987654321000",
+    };
+    const calls = [];
+    const component = await harness("openai-connection", {
+      modules: {
+        "../../lib/mt5-client": {
+          mt5Api: async (_path, body) => {
+            if (!body) return response(initial);
+            calls.push(body);
+            return response(
+              body.action === "save"
+                ? saved
+                : { ...saved, connection: { connected: true } },
+            );
+          },
+        },
+      },
+    });
+    component.render();
+    component.effects();
+    await settled();
+    let tree = component.render();
+    const select = children(tree).find(
+      (n) => n.type === "select" && n.props.name === "model",
+    );
+    assert.ok(
+      children(select).some(
+        (n) => n.type === "option" && n.props.value === saved.model,
+      ),
+    );
+    select.props.onChange({ target: { value: saved.model } });
+    tree = component.render();
+    const input = children(tree).find(
+      (n) => n.type === "input" && n.props.name === "openai-api-key",
+    );
+    assert.equal(input.props.disabled, false);
+    const key = "sk-test-fake-picker-credential-for-tests-only";
+    input.props.ref.current = { value: key };
+    const submit = children(tree).find((n) => n.type === "form").props.onSubmit;
+    submit({ preventDefault() {} });
+    submit({ preventDefault() {} });
+    await settled();
+    assert.deepEqual(calls, [
+      { action: "save", model: saved.model, key },
+      { action: "test", revision: saved.revision },
+    ]);
+    assert.equal(input.props.ref.current.value, "");
+    assert.match(text(component.render()), /OpenAI connection verified/);
+    component.close();
+  } finally {
+    b.close();
+  }
+});

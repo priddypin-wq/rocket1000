@@ -31,13 +31,16 @@ function platformDailyBudget(env) {
     );
   return null;
 }
-// Standard non-cached text rates, USD per million tokens; reviewed 2026-10-22.
+// Short-context standard text rates in USD per million tokens (developers.openai.com/api/docs/pricing).
 // Unknown models need explicit operator rates; they never inherit another price.
 const prices = {
+  "gpt-6.2-astra": [8, 40],
+  "gpt-6.2-sol": [2, 10],
   "gpt-6.1-sol": [2, 10],
   "gpt-5-mini": [0.25, 2],
   "gpt-5.4": [2.5, 15],
 };
+export const selectableModels = Object.keys(prices);
 export function tokenPrices(model, env = process.env) {
   const explicit = [
     env.ROCKET_AI_INPUT_USD_PER_MILLION,

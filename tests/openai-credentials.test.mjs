@@ -308,3 +308,53 @@ test("only a completed real-format Responses probe marks the saved key Connected
     await f.db.close();
   }
 });
+
+test("a personal workspace can change its model with its saved key and cannot reuse a stale revision", async () => {
+  const f = await fixture({
+    env: {
+      ROCKET_OPENAI_PERSONAL_WORKSPACE: "alice",
+      ROCKET_OPENAI_SERVER_MANAGED: "1",
+      ROCKET_SUBSCRIPTIONS_REQUIRED: "1",
+      OPENAI_API_KEY: REPLACEMENT,
+    },
+  });
+  try {
+    assert.equal((await f.service.status("alice")).configured, false);
+    assert.equal((await f.service.environment("alice")).OPENAI_API_KEY, "");
+    assert.equal(
+      (await f.service.environment("bob")).OPENAI_API_KEY,
+      REPLACEMENT,
+    );
+    await assert.rejects(f.service.save("bob", { key: KEY }), {
+      code: "OPENAI_SERVER_MANAGED",
+    });
+    const saved = await f.service.save("alice", { key: KEY });
+    const changed = await f.service.save("alice", {
+      model: "gpt-6.2-astra",
+      revision: saved.revision,
+    });
+    assert.notEqual(changed.revision, saved.revision);
+    assert.equal(changed.connection.connected, false);
+    const resolved = await f.service.environment("alice");
+    assert.equal(resolved.OPENAI_MODEL, "gpt-6.2-astra");
+    assert.equal(resolved.OPENAI_API_KEY, KEY);
+    await assert.rejects(
+      f.service.save("alice", {
+        model: "gpt-6.2-sol",
+        revision: saved.revision,
+      }),
+      { code: "AI_CONFIGURATION_CHANGED" },
+    );
+    await f.service.remove("alice");
+    await assert.rejects(
+      f.service.save("alice", {
+        model: "gpt-6.2-sol",
+        revision: changed.revision,
+      }),
+      { code: "AI_CONFIGURATION_CHANGED" },
+    );
+    assert.equal((await f.service.environment("alice")).OPENAI_API_KEY, "");
+  } finally {
+    await f.db.close();
+  }
+});

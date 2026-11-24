@@ -452,7 +452,7 @@ export async function tradeContext(tx, cid, now) {
   );
   const analysisEngineActive = !!(
     analysisEngine &&
-    (!openaiServerManaged() ||
+    (!openaiServerManaged(process.env, c.user_id) ||
       (analysisEngine.key_revision.startsWith("environment:")
         ? analysisEngine.key_revision === environmentCredentialRevision()
         : process.env.NODE_ENV !== "production")) &&
@@ -694,7 +694,7 @@ export async function tradeContext(tx, cid, now) {
     subscription,
     freshExecution,
     symbolRegistration,
-    aiModel: !openaiServerManaged()
+    aiModel: !openaiServerManaged(process.env, c.user_id)
       ? credential?.model || configuredModel()
       : configuredModel(),
     demoValidation: validation,
