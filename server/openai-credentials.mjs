@@ -14,13 +14,15 @@ export const openaiCredentialSchema = [
   `CREATE TABLE IF NOT EXISTS rocket_openai_credentials (user_id TEXT PRIMARY KEY,ciphertext TEXT,nonce TEXT,tag TEXT,version INTEGER NOT NULL,model TEXT NOT NULL,revision TEXT NOT NULL,updated_at BIGINT NOT NULL,removed_at BIGINT,FOREIGN KEY(user_id) REFERENCES rocket_workspaces(id) ON DELETE CASCADE)`,
 ];
 const VERSION = 1;
-// Browser credential storage is a legacy operator opt-in. The default deployment
-// accepts its paid OpenAI credential and model only from server configuration.
-export const openaiServerManaged = (env = process.env) =>
-  env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1" ||
-  env.ROCKET_OPENAI_SERVER_MANAGED !== "0";
-export function assertOpenaiCredentialWritable(env = process.env) {
-  if (openaiServerManaged(env))
+// The operator can authorize one private workspace even on a managed deployment.
+const personalWorkspace = (env, uid) =>
+  !!uid && env.ROCKET_OPENAI_PERSONAL_WORKSPACE === uid;
+export const openaiServerManaged = (env = process.env, uid = "") =>
+  !personalWorkspace(env, uid) &&
+  (env.ROCKET_SUBSCRIPTIONS_REQUIRED === "1" ||
+    env.ROCKET_OPENAI_SERVER_MANAGED !== "0");
+export function assertOpenaiCredentialWritable(env = process.env, uid = "") {
+  if (openaiServerManaged(env, uid))
     throw new ApiError(
       423,
       "OpenAI credentials and model are managed in the server environment. Browser key changes are disabled.",
@@ -176,7 +178,7 @@ export function openaiCredentialService(
   }
   async function environment(uid) {
     const row = await record(uid);
-    const serverManaged = openaiServerManaged(env);
+    const serverManaged = openaiServerManaged(env, uid);
     const key = serverManaged
       ? row?.removed_at
         ? ""
@@ -187,7 +189,7 @@ export function openaiCredentialService(
         ? row.removed_at
           ? ""
           : unseal(uid, row, env)
-        : typeof env.OPENAI_API_KEY === "string"
+        : !personalWorkspace(env, uid) && typeof env.OPENAI_API_KEY === "string"
           ? env.OPENAI_API_KEY.trim()
           : "";
     // An explicit Remove is a tombstone: the environment key cannot silently
@@ -195,6 +197,7 @@ export function openaiCredentialService(
     return {
       ...env,
       OPENAI_API_KEY: key,
+      ROCKET_OPENAI_KEY_REVISION: !serverManaged && row ? row.revision : "",
       // A customer-managed key belongs to its own provider project. Never
       // apply the deployment owner's routing headers to that credential.
       OPENAI_ORG_ID: !serverManaged && row ? "" : env.OPENAI_ORG_ID,
@@ -202,6 +205,13 @@ export function openaiCredentialService(
       OPENAI_MODEL: serverManaged
         ? configuredModel(env)
         : row?.model || configuredModel(env),
+      // Operator price overrides describe the operator's configured model only.
+      ...(!serverManaged && row && row.model !== configuredModel(env)
+        ? {
+            ROCKET_AI_INPUT_USD_PER_MILLION: "",
+            ROCKET_AI_OUTPUT_USD_PER_MILLION: "",
+          }
+        : {}),
       ROCKET_OPENAI_DIRECT_ONLY: "1",
       AI_GATEWAY_API_KEY: "",
       VERCEL_OIDC_TOKEN: "",
@@ -216,11 +226,13 @@ export function openaiCredentialService(
   });
   async function status(uid) {
     const row = await record(uid);
-    const serverManaged = openaiServerManaged(env);
+    const serverManaged = openaiServerManaged(env, uid);
     const stored = !serverManaged && !!row && !row.removed_at;
     const configured =
       stored ||
-      ((serverManaged ? !row?.removed_at : !row) &&
+      ((serverManaged
+        ? !row?.removed_at
+        : !row && !personalWorkspace(env, uid)) &&
         typeof env.OPENAI_API_KEY === "string" &&
         !!env.OPENAI_API_KEY.trim());
     let check;
@@ -241,6 +253,7 @@ export function openaiCredentialService(
     }
     return {
       serverManaged,
+      workspaceRef: uid,
       configured,
       stored,
       source: stored ? "saved" : configured ? "environment" : "none",
@@ -256,19 +269,24 @@ export function openaiCredentialService(
     };
   }
   async function save(uid, input) {
-    assertOpenaiCredentialWritable(env);
+    assertOpenaiCredentialWritable(env, uid);
     if (
       !input ||
       typeof input !== "object" ||
       Array.isArray(input) ||
-      Object.keys(input).some((k) => !["key", "model"].includes(k))
+      Object.keys(input).some((k) => !["key", "model", "revision"].includes(k))
     )
       throw new ApiError(
         400,
         "Only an API key and optional model are accepted.",
         "OPENAI_KEY_INVALID",
       );
-    const key = cleanKey(input.key);
+    const modelOnly =
+      input.key === undefined &&
+      typeof input.model === "string" &&
+      typeof input.revision === "string" &&
+      input.revision.length === 36;
+    const encrypted = modelOnly ? null : seal(uid, cleanKey(input.key), env);
     if (
       input.model !== undefined &&
       (typeof input.model !== "string" ||
@@ -283,29 +301,42 @@ export function openaiCredentialService(
     const model = configuredModel(
       input.model === undefined ? env : { OPENAI_MODEL: input.model },
     );
-    const encrypted = seal(uid, key, env);
+
     await db.transaction(async (tx) => {
       await workspace(uid, tx);
-      await tx.query(
-        "INSERT INTO rocket_openai_credentials(user_id,ciphertext,nonce,tag,version,model,revision,updated_at,removed_at) VALUES(?,?,?,?,?,?,?,?,NULL) ON CONFLICT(user_id) DO UPDATE SET ciphertext=excluded.ciphertext,nonce=excluded.nonce,tag=excluded.tag,version=excluded.version,model=excluded.model,revision=excluded.revision,updated_at=excluded.updated_at,removed_at=NULL",
-        [
-          uid,
-          encrypted.ciphertext,
-          encrypted.nonce,
-          encrypted.tag,
-          VERSION,
-          model,
-          randomUUID(),
-          now(),
-        ],
-      );
+      if (!encrypted) {
+        const rows = await tx.query(
+          "UPDATE rocket_openai_credentials SET model=?,revision=?,updated_at=? WHERE user_id=? AND revision=? AND ciphertext IS NOT NULL AND removed_at IS NULL RETURNING user_id",
+          [model, randomUUID(), now(), uid, input.revision],
+        );
+        if (!rows.length)
+          throw new ApiError(
+            409,
+            "The saved key changed. Review the current settings and try again.",
+            "AI_CONFIGURATION_CHANGED",
+          );
+      } else {
+        await tx.query(
+          "INSERT INTO rocket_openai_credentials(user_id,ciphertext,nonce,tag,version,model,revision,updated_at,removed_at) VALUES(?,?,?,?,?,?,?,?,NULL) ON CONFLICT(user_id) DO UPDATE SET ciphertext=excluded.ciphertext,nonce=excluded.nonce,tag=excluded.tag,version=excluded.version,model=excluded.model,revision=excluded.revision,updated_at=excluded.updated_at,removed_at=NULL",
+          [
+            uid,
+            encrypted.ciphertext,
+            encrypted.nonce,
+            encrypted.tag,
+            VERSION,
+            model,
+            randomUUID(),
+            now(),
+          ],
+        );
+      }
       await revokeExistingWork(uid, tx);
       await onChange?.(uid, tx);
     });
     return status(uid);
   }
   async function remove(uid) {
-    assertOpenaiCredentialWritable(env);
+    assertOpenaiCredentialWritable(env, uid);
     await db.transaction(async (tx) => {
       await workspace(uid, tx);
       await tx.query(
@@ -322,7 +353,7 @@ export function openaiCredentialService(
     environment,
     save,
     remove,
-    test: (uid) => connection.test(uid),
+    test: connection.test,
   };
 }
 

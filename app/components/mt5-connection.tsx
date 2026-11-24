@@ -200,9 +200,9 @@ export default function Mt5Connection() {
     replaceCredential = false,
   ) {
     if (actionInFlight.current) return;
-    if (!state?.downloadReady || networkError) {
+    if (!c || networkError) {
       setError(
-        "Generate and verify the connection before downloading your EA.",
+        "Wait for your private workspace connection, then download again.",
       );
       return;
     }
@@ -225,7 +225,7 @@ export default function Mt5Connection() {
         );
       const response = await mt5Api("download", {
         connectionId: generated.connectionId,
-        format,
+        format: format === "package" ? "ai-package" : "source",
         expectedInstallationId:
           review?.installationId ?? generated.installationId,
         ...(review
@@ -249,7 +249,7 @@ export default function Mt5Connection() {
       setNotice(
         format === "source"
           ? "MetaEditor source download requested. Open the saved ROCKET1000_EA.mq5 in MetaEditor, save it in your MT5 MQL5/Experts/ROCKET1000 folder and compile. Its connection configuration is included."
-          : "EA package download requested. Extract the saved ROCKET1000_EA.zip and copy its MQL5 folder into your MT5 data folder. The compiled EA and private configuration are included.",
+          : "EA package download requested. Extract the saved ROCKET1000_EA.zip and copy its MQL5 folder into your MT5 data folder. The EA uses the verified OpenAI model in this workspace.",
       );
       await refreshAfterAction();
     } catch (e) {
@@ -323,23 +323,29 @@ export default function Mt5Connection() {
         </div>
         <h2>Connect your terminal.</h2>
         <p>
-          One EA for Demo and Live. Download the verified compiled EA package;
-          its private connection configuration is already included.
+          Use the same EA on a Demo or Live account. Test your model in{" "}
+          <Link className="inner-text-link" href="#ai-connection">
+            Connect AI
+          </Link>
+          , then download your personal EA.
         </p>
         <button
           className="action-red"
-          disabled={!!busy}
+          disabled={!c || !!busy || !!networkError}
+          title={networkError || undefined}
           onClick={() => {
-            void generate();
+            void download();
           }}
         >
-          {busy === "generate"
-            ? "Verifying HTTPS server…"
-            : "Generate Connection"}
+          {busy === "download"
+            ? "Preparing your EA…"
+            : "Download ROCKET1000 EA"}
         </button>
         <div className="url-field">
           <span>MT5 WebRequest URL</span>
-          <code>{state?.serverUrl || "Generate a connection first"}</code>
+          <code>
+            {state?.serverUrl || "Available after the server is verified"}
+          </code>
         </div>
         <button
           className="action-outline"
@@ -355,30 +361,25 @@ export default function Mt5Connection() {
         >
           Copy EA Connection URL
         </button>
-        <button
-          className="action-white"
-          disabled={!state?.downloadReady || !!busy || !!networkError}
-          title={
-            networkError ||
-            (!state?.downloadReady
-              ? state?.provisioningError ||
-                "Generate the verified connection before downloading."
-              : undefined)
-          }
-          onClick={() => {
-            void download();
-          }}
-        >
-          {busy === "download"
-            ? "Preparing your EA…"
-            : "Download Rocket1000 EA (.ex5)"}
-        </button>
         <p className="inner-caption">
-          ZIP contains the actual compiled .ex5, personalized configuration and
-          instructions. Download is available only after build verification.
+          Copy both folders from the ZIP into your MT5 data folder. Allow the
+          WebRequest URL shown here and attach the EA to one chart. The first
+          heartbeat identifies your broker account and its Demo or Live type.
         </p>
         <details className="settings-inline-details">
           <summary>Connection repair & MetaEditor source</summary>
+          <button
+            className="action-red"
+            disabled={!!busy}
+            onClick={() => {
+              void generate();
+            }}
+          >
+            {busy === "generate"
+              ? "Verifying HTTPS server…"
+              : "Generate Connection"}
+          </button>
+
           <p>
             If MT5 reports a missing configuration, reinstall both folders from
             the compiled package, or download the self-contained MetaEditor

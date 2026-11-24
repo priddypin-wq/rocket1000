@@ -1,13 +1,14 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { mt5Api } from "../../lib/mt5-client";
 import { confirmedOpenAiAction } from "../../lib/action-confirmation.mjs";
 
 type Metadata = {
   serverManaged?: boolean;
+  workspaceRef?: string;
   disabledByRemoval?: boolean;
   configured: boolean;
-  verified?: boolean;
   state?: string;
   error?: string | null;
   model?: string | null;
@@ -15,13 +16,35 @@ type Metadata = {
   encryptionReady?: boolean;
   stored?: boolean;
   source?: string;
+  revision?: string | null;
+  models?: string[];
   connection?: {
     state?: string;
+    checkedAt?: number | null;
+    expiresAt?: number;
     connected?: boolean;
     error?: string | null;
     errorCode?: string | null;
   };
 };
+
+async function openAiRequest(
+  body?: Record<string, unknown>,
+): Promise<Metadata> {
+  const timeout = body?.action === "test" ? 60000 : 15000;
+  return (
+    await mt5Api("openai", body, { signal: AbortSignal.timeout(timeout) })
+  ).json();
+}
+
+function modelLabel(id: string) {
+  return id
+    .replace(/^gpt-/i, "GPT-")
+    .replace(
+      /-(astra|sol|mini)$/,
+      (_, name: string) => " " + name[0].toUpperCase() + name.slice(1),
+    );
+}
 
 export default function OpenAiConnection() {
   const [status, setStatus] = useState<Metadata | null>(null);
@@ -30,30 +53,66 @@ export default function OpenAiConnection() {
   const [notice, setNotice] = useState("");
   const [removing, setRemoving] = useState(false);
   const keyInput = useRef<HTMLInputElement>(null);
-  const modelInput = useRef<HTMLInputElement>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [choice, setChoice] = useState("");
+  const [editingKey, setEditingKey] = useState(false);
+  const [customModel, setCustomModel] = useState("");
+  const [needsAccount, setNeedsAccount] = useState(false);
+  const [reload, setReload] = useState(0);
+  const model =
+    choice === "custom" ? customModel.trim() : choice || status?.model || "";
   const mounted = useRef(false);
   const generation = useRef(0);
   const actionInFlight = useRef(false);
   useEffect(() => {
     mounted.current = true;
     const current = ++generation.current;
-    void mt5Api("openai")
-      .then((r) => r.json())
+    void openAiRequest()
       .then((metadata) => {
-        if (mounted.current && current === generation.current)
+        if (mounted.current && current === generation.current) {
           setStatus(metadata);
+          setModels(metadata.models || []);
+          setIssue("");
+          setNeedsAccount(false);
+        }
       })
       .catch((e) => {
-        if (mounted.current && current === generation.current)
+        if (mounted.current && current === generation.current) {
+          setNeedsAccount(
+            ["ACCOUNT_SESSION_REQUIRED", "LEGACY_CLAIM_PENDING"].includes(
+              e?.code,
+            ),
+          );
           setIssue(
             e instanceof Error ? e.message : "OpenAI connection unavailable",
           );
+        }
       });
     return () => {
       mounted.current = false;
       generation.current += 1;
     };
-  }, []);
+  }, [reload]);
+  const expiresAt = status?.connection?.expiresAt;
+  useEffect(() => {
+    if (!expiresAt || !status?.connection?.connected) return;
+    const timeout = window.setTimeout(
+      () => {
+        setStatus((previous) =>
+          previous?.connection?.expiresAt === expiresAt
+            ? {
+                ...previous,
+                connection: { ...previous.connection, connected: false },
+              }
+            : previous,
+        );
+        setNotice("");
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [expiresAt, status?.connection?.connected]);
+
   async function perform(action: "save" | "test" | "remove") {
     if (actionInFlight.current) return;
     setIssue("");
@@ -79,47 +138,81 @@ export default function OpenAiConnection() {
       setIssue("There is no saved OpenAI connection to remove.");
       return;
     }
-    // Read only at submission. Clear immediately; saved keys never populate this field.
     const key = action === "save" ? keyInput.current?.value.trim() : undefined;
-    if (keyInput.current) keyInput.current.value = "";
-    if (action === "save" && !key) {
-      setIssue("Enter your OpenAI API key first.");
+    if (action === "save" && (!model || (!key && !status?.stored))) {
+      setIssue(
+        !model
+          ? "Choose an OpenAI model first."
+          : "Enter your OpenAI API key first.",
+      );
       return;
     }
     if (location.protocol !== "https:") {
       setIssue(
-        "Use the secure HTTPS app to manage or test the OpenAI connection.",
+        "Open the HTTPS version of ROCKET1000 to save or test your key.",
       );
       return;
     }
+    if (keyInput.current) keyInput.current.value = "";
+    setEditingKey(false);
     actionInFlight.current = true;
     setBusy(action);
     const current = ++generation.current;
     try {
-      const model = modelInput.current?.value.trim();
-      const metadata = await (
-        await mt5Api("openai", {
-          action,
-          ...(action === "save" ? { key, ...(model ? { model } : {}) } : {}),
-        })
-      ).json();
+      let expected = status;
+      if (action === "save" && (key || model !== status?.model)) {
+        expected = await openAiRequest({
+          action: "save",
+          model,
+          ...(key ? { key } : { revision: status?.revision }),
+        });
+        confirmedOpenAiAction(expected, "save");
+        if (!mounted.current || current !== generation.current) return;
+        if (expected.model !== model)
+          throw Error("The saved model changed. Review it before testing.");
+        setStatus(expected);
+        setNotice("Saved. Waiting for OpenAI to verify the connection.");
+      }
+      if (action !== "remove") setBusy("test");
+      const metadata = await openAiRequest({
+        action: action === "remove" ? "remove" : "test",
+        ...(action !== "remove" && expected?.revision
+          ? { revision: expected.revision }
+          : {}),
+      });
       if (!mounted.current || current !== generation.current) return;
-      confirmedOpenAiAction(metadata, action);
+      confirmedOpenAiAction(metadata, action === "remove" ? "remove" : "test");
       setStatus(metadata);
       setRemoving(false);
+      if (
+        action !== "remove" &&
+        (metadata.model !== expected?.model ||
+          metadata.revision !== expected?.revision)
+      )
+        throw Error(
+          "The OpenAI settings changed during the test. Review the model and test again.",
+        );
+      setChoice("");
       setNotice(
-        action === "save"
-          ? "API key saved securely. Test the connection before starting AI."
-          : action === "remove"
-            ? "API key removed. AI analysis and new automated orders are stopped. Save and verify a key before restarting."
-            : metadata.verified === true ||
-                metadata.connection?.connected === true
-              ? "OpenAI connection verified. No trades were submitted."
-              : "Verification did not succeed. Review the connection error.",
+        action === "remove"
+          ? "API key removed. AI analysis and new automated orders are stopped."
+          : metadata.connection?.connected === true
+            ? "OpenAI connection verified. No trades were submitted."
+            : "",
       );
     } catch (e) {
       if (mounted.current && current === generation.current) {
         // Only the backend's sanitized message is displayed. Never reflect the submitted key.
+        setNotice("");
+        if (
+          e instanceof Error &&
+          "code" in e &&
+          (e.code === "ACCOUNT_SESSION_REQUIRED" ||
+            e.code === "LEGACY_CLAIM_PENDING")
+        ) {
+          setStatus(null);
+          setNeedsAccount(true);
+        }
         const message =
           e instanceof Error ? e.message : "OpenAI request failed";
         setIssue(
@@ -129,7 +222,7 @@ export default function OpenAiConnection() {
         );
       }
       try {
-        const metadata = await (await mt5Api("openai")).json();
+        const metadata = await openAiRequest();
         if (mounted.current && current === generation.current)
           setStatus(metadata);
       } catch {
@@ -142,7 +235,10 @@ export default function OpenAiConnection() {
   }
   const verified =
     !issue &&
-    (status?.verified === true || status?.connection?.connected === true);
+    !busy &&
+    !editingKey &&
+    model === status?.model &&
+    status?.connection?.connected === true;
   const storageReady = status?.encryptionReady ?? status?.storageReady;
   // Missing/loading metadata stays in the default environment-only mode.
   const serverManaged = status?.serverManaged !== false;
@@ -153,30 +249,56 @@ export default function OpenAiConnection() {
       aria-labelledby="openai-title"
     >
       <div className="inner-card-title">
-        <span id="openai-title">OPENAI AI CONNECTION</span>
+        <span id="openai-title">Connect AI</span>
         <span
           className={`settings-status ${verified ? "is-connected" : ""}`}
           role="status"
         >
           {!status
-            ? "Checking…"
+            ? issue
+              ? "Unavailable"
+              : "Checking…"
             : busy === "test"
               ? "Testing…"
               : verified
                 ? "Connected"
-                : "Disconnected"}
+                : status.configured
+                  ? "Needs verification"
+                  : "Not configured"}
         </span>
       </div>
-      <p>
-        The configured OpenAI account powers strategy analysis. Independent risk
-        checks and broker-side protective stops remain enforced.
-      </p>
-      {serverManaged ? (
+      {!status ? (
+        <div>
+          {needsAccount ? (
+            <Link href="/account" className="inner-text-link">
+              Sign in to ROCKET1000
+            </Link>
+          ) : issue ? (
+            <button
+              className="action-outline"
+              onClick={() => setReload(reload + 1)}
+            >
+              Retry connection settings
+            </button>
+          ) : null}
+        </div>
+      ) : serverManaged ? (
         <div>
           <p className="inner-caption">
-            Server managed. The server operator configures the OpenAI connection
-            and model. API keys are never entered or displayed here.
+            Server managed. To use your own key, enable personal-key access for
+            this workspace on the server.
           </p>
+          {status.workspaceRef && (
+            <details className="settings-inline-details">
+              <summary>Enable my API key</summary>
+              <p>
+                For local SQLite, run <code>npm run setup:openai</code> in the
+                app folder. On a shared server, set{" "}
+                <code>ROCKET_OPENAI_PERSONAL_WORKSPACE</code> to{" "}
+                <code>{status.workspaceRef}</code> on the app and worker.
+              </p>
+            </details>
+          )}
           <p>
             Configuration:{" "}
             {status
@@ -218,40 +340,70 @@ export default function OpenAiConnection() {
           }}
         >
           <label className="trade-field">
-            {status?.configured ? "Replace API key" : "OpenAI API key"}
+            Model
+            <span className="openai-model-picker">
+              <span aria-hidden="true">ϟ</span>
+              <select
+                name="model"
+                value={choice || status.model || ""}
+                disabled={!!busy}
+                onChange={(event) => {
+                  setChoice(event.target.value);
+                  setNotice("");
+                }}
+              >
+                {!status.model && <option value="">Choose a model</option>}
+                {Array.from(
+                  new Set([...(status.model ? [status.model] : []), ...models]),
+                ).map((id) => (
+                  <option key={id} value={id}>
+                    {modelLabel(id)}
+                  </option>
+                ))}
+                <option value="custom">Enter another model ID…</option>
+              </select>
+              <span aria-hidden="true">›</span>
+            </span>
+          </label>
+          {choice === "custom" && (
+            <label className="trade-field">
+              OpenAI model ID
+              <input
+                name="custom-model"
+                value={customModel}
+                autoCapitalize="none"
+                spellCheck={false}
+                onChange={(event) => setCustomModel(event.target.value)}
+                maxLength={100}
+                disabled={!!busy}
+                required
+              />
+            </label>
+          )}
+          <label className="trade-field">
+            OpenAI API key
             <input
               ref={keyInput}
+              onChange={(event) => {
+                setEditingKey(!!event.target.value);
+                setNotice("");
+              }}
               type="password"
               name="openai-api-key"
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
-              placeholder="Enter API key"
-              disabled={!!busy || storageReady === false}
-              required
+              placeholder={
+                status.stored
+                  ? "Leave blank to use your saved key"
+                  : "Paste your OpenAI API key"
+              }
+              disabled={!!busy}
+              required={!status.stored}
               data-1p-ignore="true"
               data-lpignore="true"
             />
           </label>
-          <details className="settings-inline-details">
-            <summary>Reasoning model</summary>
-            <label className="trade-field">
-              Model available to your OpenAI account
-              <input
-                ref={modelInput}
-                name="model"
-                placeholder={
-                  status?.model || "Use the server’s configured reasoning model"
-                }
-                autoComplete="off"
-                disabled={!!busy}
-              />
-            </label>
-            <p className="inner-caption">
-              A real API test verifies model access. A model name alone does not
-              confirm availability.
-            </p>
-          </details>
           <div className="engine-actions">
             <button
               className="action-red"
@@ -260,17 +412,9 @@ export default function OpenAiConnection() {
             >
               {busy === "save"
                 ? "Saving…"
-                : status?.configured
-                  ? "Replace API Key"
-                  : "Save API Key"}
-            </button>
-            <button
-              className="action-outline"
-              type="button"
-              disabled={!!busy || !status?.configured}
-              onClick={() => void perform("test")}
-            >
-              {busy === "test" ? "Testing…" : "Test Connection"}
+                : busy === "test"
+                  ? "Testing…"
+                  : "Save & Test Connection"}
             </button>
           </div>
         </form>
@@ -311,13 +455,19 @@ export default function OpenAiConnection() {
       ) : null}
       {!serverManaged && storageReady === false ? (
         <p className="inner-error" role="alert">
-          Secure server encryption is not configured. Key saving remains
-          unavailable until setup is complete.
+          Set up secure key storage first. For local SQLite run{" "}
+          <code>npm run setup:openai</code>. On a shared server configure the
+          vault secret on the app and worker.
         </p>
       ) : null}
       {issue || status?.error || status?.connection?.error ? (
         <p className="inner-error" role="alert">
           {issue || status?.error || status?.connection?.error}
+        </p>
+      ) : null}
+      {status?.connection?.checkedAt ? (
+        <p className="inner-caption">
+          Last tested {new Date(status.connection.checkedAt).toLocaleString()}
         </p>
       ) : null}
       {notice ? (

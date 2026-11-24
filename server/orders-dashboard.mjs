@@ -12,6 +12,7 @@ import {
 import { validateSnapshot, decisionBar, sanitizePositions } from "./market.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { validateAssessment } from "./ai-analysis.mjs";
+import { openaiServerManaged } from "./openai-credentials.mjs";
 import { configuredModel, isConfiguredModel } from "./ai-provider.mjs";
 import { selectedStrategyProfile } from "./strategy.mjs";
 import { connectionHealth } from "./connection-health.mjs";
@@ -370,10 +371,9 @@ export function ordersDashboardService(db, { now = Date.now } = {}) {
         "SELECT model FROM rocket_openai_credentials WHERE user_id=?",
         [uid],
       );
-      const activeModel =
-        process.env.ROCKET_OPENAI_SERVER_MANAGED === "0"
-          ? credential?.model || configuredModel()
-          : configuredModel();
+      const activeModel = !openaiServerManaged(process.env, uid)
+        ? credential?.model || configuredModel()
+        : configuredModel();
       const opportunities = [];
       let latestSignal = null;
       if (symbolFresh && analysis) {

@@ -7,10 +7,7 @@ import {
 import { provisioningService } from "./provisioning.mjs";
 import { analysisService } from "./analysis-service.mjs";
 import { analyzeMarket } from "./ai-analysis.mjs";
-import {
-  openaiCredentialService as credentialService,
-  openaiServerManaged,
-} from "./openai-credentials.mjs";
+import { openaiCredentialService as credentialService } from "./openai-credentials.mjs";
 import {
   usageService,
   defaultDailyBudget,
@@ -95,7 +92,7 @@ export function engineService(
   // a constant "environment" revision, this invalidates jobs after rotation,
   // including a response already in flight when the server secret changes.
   const credentialRevision = (metadata) =>
-    !credentials && openaiServerManaged(env)
+    !credentials && metadata?.serverManaged === true
       ? environmentCredentialRevision(env)
       : String(metadata?.revision || "environment");
   // Only a successfully enabled execution session creates this intent. Analysis
@@ -905,7 +902,7 @@ export function engineService(
       const guard = async (tx) => {
         if (
           !credentials &&
-          openaiServerManaged(env) &&
+          metadata?.serverManaged === true &&
           credentialRevision(metadata) !== job.key_revision
         )
           throw new ApiError(

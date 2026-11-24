@@ -4,7 +4,7 @@ import { mt5Api } from "../../lib/mt5-client";
 import { useAnalysisEngine, engineLabel } from "../../lib/use-analysis-engine";
 import { useOrders, brokerNumber, brokerTime } from "../../lib/use-orders";
 import type { AutoState } from "../../lib/trading-types";
-import OpenAiConnection from "./openai-connection";
+import Link from "next/link";
 import { liveReviewMatches } from "../../lib/live-review.mjs";
 import { engineIdentityMatches } from "../../lib/engine-control-client.mjs";
 
@@ -252,7 +252,9 @@ export default function EngineDiagnostics() {
   }
   return (
     <div className="engine-diagnostics">
-      <OpenAiConnection />
+      <Link className="inner-text-link" href="/mt5#ai-connection">
+        OpenAI connection settings
+      </Link>
       <details className="inner-card" open>
         <summary>Engine health & scheduling</summary>
         <div className="inner-kv">

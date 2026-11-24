@@ -57,6 +57,29 @@ h3 {
   outline: 2px solid #ff5a70;
   outline-offset: 2px;
 }
+.openai-model-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.openai-model-picker select {
+  appearance: none;
+  cursor: pointer;
+  padding: 14px 44px;
+  border-radius: 28px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.openai-model-picker > span {
+  position: absolute;
+  pointer-events: none;
+  left: 17px;
+  font-size: 22px;
+}
+.openai-model-picker > span:last-child {
+  left: auto;
+  right: 18px;
+}
 .trade-blockers {
   padding-left: 18px;
   color: #ffb7c2;

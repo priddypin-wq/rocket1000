@@ -10,6 +10,7 @@
     "start": "next start",
     "test": "node --test tests/*.test.mjs",
     "lint": "eslint app lib server scripts tests next.config.ts eslint.config.mjs --max-warnings 0",
+    "setup:openai": "node scripts/setup-personal-openai.mjs",
     "setup:local": "node scripts/setup-local.mjs",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
     "build:ea": "pwsh -NoProfile -File scripts/build-ea.ps1",

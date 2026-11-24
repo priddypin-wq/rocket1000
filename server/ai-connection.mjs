@@ -172,6 +172,7 @@ export function aiConnectionService(
         ...base,
         state: current ? "connected" : "configured",
         connected: current,
+        expiresAt: checkedAt + SUCCESS_LIFETIME,
         checkedAt,
         lastSuccessAt,
       };
@@ -180,8 +181,17 @@ export function aiConnectionService(
     return { ...base, state: "error", checkedAt, lastSuccessAt, ...failure };
   }
 
-  async function test(uid) {
+  async function test(uid, expectedRevision = "") {
     const { runtimeEnv, config, hash } = await configuration(uid);
+    if (
+      expectedRevision &&
+      runtimeEnv.ROCKET_OPENAI_KEY_REVISION !== expectedRevision
+    )
+      throw new ApiError(
+        409,
+        errors.AI_CONFIGURATION_CHANGED,
+        "AI_CONFIGURATION_CHANGED",
+      );
     if (!config.configured)
       throw new ApiError(
         503,

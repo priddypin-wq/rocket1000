@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { zipSync, strToU8 } from "fflate";
 import { validateSnapshot } from "./market.mjs";
 import { ApiError } from "./errors.mjs";
+import { openaiCredentialService } from "./openai-credentials.mjs";
 import { ENGINE_VERSION } from "../lib/engine-version.mjs";
 import { personalizedEaSource } from "./ea-source.mjs";
 import { pauseActivation } from "./engine-activation.mjs";
@@ -60,7 +61,7 @@ export function backendOrigin(env = process.env) {
   } catch {
     throw new ApiError(
       503,
-      "EA downloads require a configured production HTTPS backend.",
+      "Set ROCKET_BACKEND_URL to this backend’s HTTPS hostname reachable from MT5. The compiled EA requires a DNS name on port 443.",
       "BACKEND_NOT_CONFIGURED",
     );
   }
@@ -160,7 +161,7 @@ export function provisioningService(
       requestId,
     } = {},
   ) {
-    if (!["package", "source"].includes(format))
+    if (!["ai-package", "package", "source"].includes(format))
       throw new ApiError(400, "Unsupported EA download format.");
     if (typeof replaceCredential !== "boolean")
       throw new ApiError(400, "Invalid installation replacement choice.");
@@ -174,6 +175,23 @@ export function provisioningService(
     const { binary, manifest, source } = await artifact();
     const createdAt = now();
     return db.transaction(async (tx) => {
+      // Lock the workspace before its connection, in the same order as key rotation.
+      // Read the saved test result only: downloading never sends a paid AI request.
+      let verifiedModel = null;
+      if (format === "ai-package") {
+        const ai = await openaiCredentialService(tx, { env, now }).status(uid);
+        if (
+          !ai.configured ||
+          !ai.connection.connected ||
+          ai.connection.provider !== "OpenAI"
+        )
+          throw new ApiError(
+            409,
+            "Open Connect AI and test your selected model, then download the EA.",
+            "EA_OPENAI_VERIFICATION_REQUIRED",
+          );
+        verifiedModel = ai.model;
+      }
       await owned(tx, uid, cid, true);
       const [current] = await tx.query(
         "SELECT id,revoked_at FROM rocket_direct_installations WHERE connection_id=? ORDER BY CASE WHEN revoked_at IS NULL THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT 1",
@@ -252,7 +270,7 @@ export function provisioningService(
       if (expiresAt <= createdAt)
         throw new ApiError(401, "Private browser session expired");
       const config = `version=1\nbackend_url=${url}\ninstallation_id=${id}\ncredential=${token}\nexpires_at=${Math.floor(expiresAt / 1000)}\n`;
-      const readme = `ROCKET1000 EA - personalized installation\n\n1. Keep this ZIP private: its config grants telemetry access to ONE installation.\n2. In MT5 choose File > Open Data Folder. Close/remove an older ROCKET1000 EA on all charts first.\n3. Copy MQL5 from this package into that data folder, merging its subfolders.\n   EA: MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5\n   Config: MQL5/Files/ROCKET1000/rocket1000.config\n   The files must stay in those locations; the EA loads the config automatically.\n4. Tools > Options > Expert Advisors: allow WebRequest for this exact address:\n   ${url}\n   This is an MT5 security permission, not an EA input or credential. Never disable TLS checks.\n5. Refresh Navigator and attach ROCKET1000 EA to ONE chart in the authorized account.\n   No token, URL, password or DLL input is needed. No dashboard account or email login is required. Algo Trading can remain OFF.\n6. Return to the dashboard and wait for verification.\n\nThe EA verifies the MT5 account, broker server and Demo/Live type. Switching accounts re-registers the new identity, stops automation and cancels old queued orders. Start again only after reviewing the new account.\nRepeated downloads preserve the active credential. Revoke EA access explicitly before replacing a lost installation.\nCredential expires: ${new Date(expiresAt).toISOString()}\nOrders are DISABLED by default. Account & settings offers Start AI trading after broker and risk checks pass. START AI verifies the real OpenAI connection and binds execution to the authenticated broker account. Demo and Live use the same workflow. A temporary reconnect may resume an already-enabled session for the same account and terminal; STOP and Emergency Stop never resume automatically.\nThe terminal must be logged into its broker to register.\nUse a separate MT5 data folder/terminal for each concurrent connection.\nThis package does not contain MT5 passwords, OpenAI keys, or dashboard session secrets.\nBuild source SHA-256: ${manifest.sourceSha256}\n`;
+      const readme = `ROCKET1000 EA - personalized installation\n\n1. Keep this ZIP private: its config grants telemetry access to ONE installation.\n2. In MT5 choose File > Open Data Folder. Close/remove an older ROCKET1000 EA on all charts first.\n3. Copy MQL5 from this package into that data folder, merging its subfolders.\n   EA: MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5\n   Config: MQL5/Files/ROCKET1000/rocket1000.config\n   The files must stay in those locations; the EA loads the config automatically.\n4. Tools > Options > Expert Advisors: allow WebRequest for this exact address:\n   ${url}\n   This is an MT5 security permission, not an EA input or credential. Never disable TLS checks.\n5. Refresh Navigator and attach ROCKET1000 EA to ONE chart in the authorized account.\n   No token, URL, password or DLL input is needed. No dashboard account or email login is required. Algo Trading can remain OFF.\n6. Return to the dashboard and wait for verification.\n\nThe EA verifies the MT5 account, broker server and Demo/Live type. Switching accounts re-registers the new identity, stops automation and cancels old queued orders. Start again only after reviewing the new account.\nRepeated downloads preserve the active credential. Revoke EA access explicitly before replacing a lost installation.\nCredential expires: ${new Date(expiresAt).toISOString()}\nOrders are disabled by default. Check the account login, broker server and Demo/Live type in the app before enabling Auto Trading. Live trading requires explicit confirmation for that account. A temporary reconnect may resume an already-enabled session for the same account and terminal; STOP and Emergency Stop never resume automatically.\nThe terminal must be logged into its broker to register.\nUse a separate MT5 data folder/terminal for each concurrent connection.\nThis package does not contain MT5 passwords, OpenAI keys, or dashboard session secrets.\nBuild source SHA-256: ${manifest.sourceSha256}\n`;
       const archive =
         format === "source"
           ? strToU8(
@@ -268,12 +286,17 @@ export function provisioningService(
               {
                 "MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5": binary,
                 "MQL5/Files/ROCKET1000/rocket1000.config": strToU8(config),
-                "INSTALL.txt": strToU8(readme),
+                "INSTALL.txt": strToU8(
+                  verifiedModel
+                    ? `OpenAI model verified at download: ${verifiedModel}\nThis installation uses the current model in your ROCKET1000 workspace. Keep the backend online.\n\n${readme}`
+                    : readme,
+                ),
               },
               { level: 6 },
             );
       const result = {
         bytes: archive,
+        verifiedModel,
         connectionId: cid,
         installationId: id,
         protocol: 4,

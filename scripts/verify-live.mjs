@@ -53,7 +53,7 @@ try {
   const html = await page.text();
   assert.ok(
     html.includes("Generate Connection") &&
-      html.includes("Download Rocket1000 EA (.ex5)"),
+      html.includes("Download ROCKET1000 EA"),
     "MT5 controls are missing",
   );
   assert.ok(
