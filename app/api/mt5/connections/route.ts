@@ -32,9 +32,7 @@ export const GET = (req: Request) =>
           serverUrl = configured;
           verifiedAt = Number(generated.verified_at);
           downloadReady = true;
-        } else
-          provisioningError =
-            "Generate Connection to verify the live HTTPS server.";
+        }
       } catch (e) {
         provisioningError =
           e instanceof ApiError

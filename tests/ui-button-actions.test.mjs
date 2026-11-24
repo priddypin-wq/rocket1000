@@ -267,6 +267,7 @@ function eaResponse(mime, installationId = generatedConnection.installationId) {
       "Content-Type": mime,
       "X-Rocket-Connection": generatedConnection.connectionId,
       "X-Rocket-Installation": installationId,
+      "X-Rocket-OpenAI-Model": "gpt-6.2-sol",
       "X-Rocket-Protocol": "4",
       "X-Rocket-Engine": ENGINE_VERSION,
       "X-Rocket-SHA256": createHash("sha256").update(content).digest("hex"),
@@ -422,13 +423,13 @@ test("compiled EA and MetaEditor source downloads issue one request and preserve
   const b = browser();
   try {
     for (const [label, format, mime] of [
-      ["Download Rocket1000 EA (.ex5)", "package", "application/zip"],
+      ["Download ROCKET1000 EA", "package", "application/zip"],
       ["Download MetaEditor source (.mq5)", "source", "text/x-mql5"],
     ]) {
       const calls = [],
         pending = deferred();
       const component = await harness("mt5-connection", {
-        initial: [workspace],
+        initial: [{ ...workspace, downloadReady: format === "source" }],
         modules: {
           "../../lib/mt5-client": {
             mt5Api: async (path, body) => {
@@ -440,7 +441,9 @@ test("compiled EA and MetaEditor source downloads issue one request and preserve
           },
         },
       });
-      const action = button(component.render(), label).props.onClick;
+      const control = button(component.render(), label);
+      assert.equal(control.props.disabled, false);
+      const action = control.props.onClick;
       action();
       action();
       await settled();
@@ -448,7 +451,7 @@ test("compiled EA and MetaEditor source downloads issue one request and preserve
       assert.equal(download.length, 1);
       assert.deepEqual(download[0].body, {
         connectionId: workspace.connections[0].id,
-        format,
+        format: format === "package" ? "ai-package" : "source",
         expectedInstallationId: generatedConnection.installationId,
       });
       pending.resolve(eaResponse(mime));

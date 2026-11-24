@@ -158,7 +158,7 @@ try {
   const page = await request("/mt5");
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.ok(html.includes("Download Rocket1000 EA (.ex5)"));
+  assert.ok(html.includes("Download ROCKET1000 EA"));
   assert.ok(!/type="(?:email|password)"/.test(html));
   passed("direct MT5 page accessible without email, password or registration");
   assert.equal(
@@ -590,6 +590,18 @@ try {
   ).json();
   assert.equal(data.serverUrl, "https://integration.example.test");
   assert.equal(data.downloadReady, true);
+  const unverified = await request("/api/mt5/download", {
+    cookie: alice,
+    body: { connectionId: id, format: "ai-package" },
+  });
+  assert.equal(unverified.status, 409);
+  assert.equal(
+    (await unverified.json()).code,
+    "EA_OPENAI_VERIFICATION_REQUIRED",
+  );
+  passed(
+    "the app download requires OpenAI verification before the first MT5 registration",
+  );
   let r = await request("/api/mt5/download", {
     cookie: alice,
     body: { connectionId: id, format: "package" },

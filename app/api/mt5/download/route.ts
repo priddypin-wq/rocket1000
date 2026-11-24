@@ -84,6 +84,9 @@ export const POST = (req: Request) =>
           "X-Rocket-Installation": artifact.installationId,
           "X-Rocket-Protocol": String(artifact.protocol),
           "X-Rocket-Engine": artifact.engineVersion,
+          ...(artifact.verifiedModel
+            ? { "X-Rocket-OpenAI-Model": artifact.verifiedModel }
+            : {}),
           "X-Rocket-SHA256": artifact.sha256,
         },
       });

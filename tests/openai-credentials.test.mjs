@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { strFromU8, unzipSync } from "fflate";
+import { provisioningService } from "../server/provisioning.mjs";
 import { openDatabase, migrateConnections } from "../server/database.mjs";
 import {
   openaiCredentialService,
@@ -354,6 +356,71 @@ test("a personal workspace can change its model with its saved key and cannot re
       { code: "AI_CONFIGURATION_CHANGED" },
     );
     assert.equal((await f.service.environment("alice")).OPENAI_API_KEY, "");
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("the AI-ready ZIP requires a current check for its own workspace and preserves one installation", async () => {
+  let calls = 0;
+  const f = await fixture({
+    responder: async ({ model }) => {
+      calls++;
+      return {
+        status: "completed",
+        model,
+        output: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "ROCKET1000_OK" }],
+          },
+        ],
+      };
+    },
+  });
+  try {
+    let clock = NOW;
+    const ea = provisioningService(f.db, {
+      env: f.env,
+      now: () => clock,
+      origin: () => "https://fixture.example.test",
+    });
+    const alice = await ea.create("alice");
+    const bob = await ea.create("bob");
+    const download = (user, connection) =>
+      ea.prepareDownload(user, connection.id, { format: "ai-package" });
+    const blocked = { code: "EA_OPENAI_VERIFICATION_REQUIRED" };
+    await f.service.save("alice", { key: KEY, model: "gpt-6.2-sol" });
+    await assert.rejects(download("alice", alice), blocked);
+    assert.equal(
+      (await f.db.query("SELECT id FROM rocket_direct_installations")).length,
+      0,
+    );
+    assert.equal((await f.service.test("alice")).connected, true);
+    await assert.rejects(download("bob", bob), blocked);
+    const zip = await download("alice", alice);
+    assert.equal(zip.verifiedModel, "gpt-6.2-sol");
+    const entries = unzipSync(zip.bytes);
+    const conf = strFromU8(entries["MQL5/Files/ROCKET1000/rocket1000.config"]);
+    const install = strFromU8(entries["INSTALL.txt"]);
+    assert.ok(
+      entries["MQL5/Experts/ROCKET1000/ROCKET1000_EA.ex5"].length > 1024,
+    );
+    assert.ok(conf.includes(zip.installationId));
+    assert.ok(install.includes("gpt-6.2-sol"));
+    for (const bytes of Object.values(entries))
+      assert.ok(!Buffer.from(bytes).includes(Buffer.from(KEY)));
+    assert.equal(
+      (await download("alice", alice)).installationId,
+      zip.installationId,
+    );
+    clock += 16 * 60000;
+    await assert.rejects(download("alice", alice), blocked);
+    clock = NOW;
+    await f.service.save("alice", { key: REPLACEMENT, model: "gpt-6.2-astra" });
+    await assert.rejects(download("alice", alice), blocked);
+    assert.equal(calls, 1);
   } finally {
     await f.db.close();
   }
